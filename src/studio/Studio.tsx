@@ -135,6 +135,46 @@ export default function Studio() {
   const [mobilePanel, setMobilePanel] = useState<
     "none" | "library" | "properties"
   >("none");
+  const [compact, setCompact] = useState(
+    () => matchMedia("(max-width: 960px)").matches,
+  );
+  useEffect(() => {
+    const query = matchMedia("(max-width: 960px)");
+    const update = () => setCompact(query.matches);
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  useEffect(() => {
+    if (!compact || mobilePanel === "none" || modal) return;
+    const panel = document.querySelector<HTMLElement>(`.studio-${mobilePanel}`);
+    if (!panel) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const focusable = () =>
+      Array.from(
+        panel.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex="0"]',
+        ),
+      ).filter((el) => el.tabIndex >= 0 && el.getClientRects().length > 0);
+    focusable()[0]?.focus({ preventScroll: true });
+    const trap = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const items = focusable();
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    panel.addEventListener("keydown", trap);
+    return () => {
+      panel.removeEventListener("keydown", trap);
+      previous?.focus({ preventScroll: true });
+    };
+  }, [compact, mobilePanel, modal]);
   const [saved, setSaved] = useState("Saved");
   const [version, setVersion] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -532,6 +572,10 @@ export default function Studio() {
       <div className="studio-body">
         <aside
           className={`studio-library ${mobilePanel === "library" ? "mobile-visible" : ""}`}
+          inert={compact && mobilePanel !== "library"}
+          role={compact ? "dialog" : undefined}
+          aria-modal={compact && mobilePanel === "library" ? true : undefined}
+          aria-label="Cake components and templates"
         >
           <div className="studio-panel-mobile-heading">
             <strong>A little inspiration</strong>
@@ -947,6 +991,12 @@ export default function Studio() {
         </main>
         <aside
           className={`studio-properties ${mobilePanel === "properties" ? "mobile-visible" : ""}`}
+          inert={compact && mobilePanel !== "properties"}
+          role={compact ? "dialog" : undefined}
+          aria-modal={
+            compact && mobilePanel === "properties" ? true : undefined
+          }
+          aria-label="Cake properties and pricing"
         >
           <div className="studio-panel-mobile-heading">
             <strong>The finishing touches</strong>

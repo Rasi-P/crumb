@@ -1188,7 +1188,7 @@
   }
 }
 
-@media (max-width: 1000px) and (min-width: 761px) {
+@media (max-width: 1000px) and (min-width: 961px) {
   .studio-body {
     grid-template-columns: 168px minmax(0, 1fr) 224px;
   }
@@ -1305,7 +1305,7 @@
   }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 960px) {
   .studio-mobile-undo {
     display: flex;
     pointer-events: auto;

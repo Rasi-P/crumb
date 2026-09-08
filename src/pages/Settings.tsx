@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Bell,
@@ -7,6 +7,7 @@ import {
   CreditCard,
   Download,
   ImagePlus,
+  LogOut,
   IndianRupee,
   MapPin,
   Moon,
@@ -35,6 +36,14 @@ export default function Settings() {
   const [section, setSection] = useState("Business profile");
   const [form, setForm] = useState<Business>(d.business);
   const [busy, setBusy] = useState(false);
+  const [protectedWorkspace, setProtectedWorkspace] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  useEffect(() => {
+    fetch("/api/session")
+      .then((r) => r.json())
+      .then((session) => setProtectedWorkspace(session.local === false))
+      .catch(() => {});
+  }, []);
   const update = <K extends keyof Business>(key: K, value: Business[K]) =>
     setForm((s) => ({ ...s, [key]: value }));
   const save = async () => {
@@ -467,6 +476,34 @@ export default function Settings() {
                   <Download size={16} />
                   Download business data
                 </Button>
+                {protectedWorkspace && (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    loading={signingOut}
+                    onClick={async () => {
+                      setSigningOut(true);
+                      try {
+                        const response = await fetch("/api/logout", {
+                          method: "POST",
+                        });
+                        if (!response.ok) throw new Error();
+                        location.reload();
+                      } catch {
+                        useStore
+                          .getState()
+                          .toast(
+                            "Could not sign out. Please try again.",
+                            "error",
+                          );
+                        setSigningOut(false);
+                      }
+                    }}
+                  >
+                    <LogOut size={16} />
+                    Sign out
+                  </Button>
+                )}
               </>
             )}
             {section !== "Ingredients" && (

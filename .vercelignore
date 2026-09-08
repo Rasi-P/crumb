@@ -1,0 +1,14 @@
+.data
+.artifacts
+.env*
+.git
+.agents
+.codex
+.claude
+node_modules
+test-results
+playwright-report
+tests
+scripts/*
+!scripts/build-api.mjs
+*.tsbuildinfo

@@ -4,7 +4,7 @@ A connected cake-business workspace for **Luna Bake Studio**, with an interactiv
 
 ## Run locally
 
-Requires Node.js 22.13+ (verified on Node.js 26).
+Use Node.js 24 LTS, the configured Vercel runtime. Local development is also verified on Node.js 26.
 
 ```sh
 npm ci
@@ -48,7 +48,8 @@ src/lib/          Typed client store and serialized API mutations
 src/components/   Shared controls, layout, charts, dialogs, and search
 src/pages/        Business workflows and public quotations
 src/studio/       Editor, 2D SVG renderer, lazy-loaded Three.js renderer
-server/           Express API, owner sessions, transactional SQLite repository
+server/           Express API, signed owner sessions, SQLite/Postgres repositories
+api/              Vercel Function entry point
 tests/            Business tests, browser workflows, visual/accessibility audits
 ```
 
@@ -88,10 +89,44 @@ Screenshots are written to `.artifacts/`.
 
 ```sh
 npm run build
-OWNER_PASSWORD='your-own-long-password' npm start
+OWNER_PASSWORD='your-own-long-password' SESSION_SECRET='your-own-random-secret-at-least-32-characters' npm start
 ```
 
-Production requires `OWNER_PASSWORD`. It uses HttpOnly, SameSite cookies, expiring owner sessions, login throttling, and mutation origin checks. Serve behind HTTPS for secure cookies. Configure `HOST`, `PORT`, and `DATABASE_PATH` as needed; retain and back up the SQLite file on persistent storage.
+Production requires `OWNER_PASSWORD` (at least 16 characters) and `SESSION_SECRET` (at least 32 characters). It uses HttpOnly, SameSite, Secure cookies and signed 24-hour sessions that work across server instances. Changing either secret invalidates existing sessions. Login throttling is stored in the database, and mutation requests check their origin. Sign out from Settings > Account.
+
+For a standalone server, serve behind HTTPS. Configure `HOST`, `PORT`, and `DATABASE_PATH` as needed; retain and back up the SQLite file on persistent storage.
+
+## Vercel deployment
+
+Live application: **https://crumb-cake-os.vercel.app**. Sign in using `OWNER_PASSWORD` from the private `.env.deployment.local` file on the setup machine.
+
+The linked project is `rasikkaas-projects/crumb-cake-os`. Vercel serves the Vite assets from `dist/` and routes `/api/*` to the Express Function. `npm run build` also bundles the TypeScript backend into `.server-build/app.mjs`, loaded by the small JavaScript entry at `api/index.js`. This avoids runtime TypeScript and extensionless ESM import resolution. The function and the free Neon Postgres database are configured in Singapore (`sin1`).
+
+Required server-side production variables:
+
+- `DATABASE_URL`: injected by the Neon integration.
+- `OWNER_PASSWORD`: generated and stored as a sensitive Vercel variable.
+- `SESSION_SECRET`: generated and stored as a sensitive Vercel variable.
+
+The initial owner credentials are in the git-ignored, owner-readable `.env.deployment.local` file on the setup machine. These files are excluded from deployment uploads. Never prefix secrets with `VITE_`.
+
+```sh
+npx vercel --prod --scope rasikkaas-projects
+```
+
+The initial deployment was published from the local working tree. Commit the deployment configuration and backend changes before relying on automatic Git-based redeployments. No secrets or database files belong in Git.
+
+Postgres retains the same entities and foreign-key relationships as SQLite. Each mutation locks the workspace row, checks its revision, and commits all related changes in one transaction. Local SQLite remains the default when `DATABASE_URL` is absent; Vercel refuses to fall back to ephemeral SQLite.
+
+`scripts/migrate-to-postgres.ts` transfers the existing local workspace only into an untouched hosted workspace. It refuses to overwrite hosted changes. `tests/postgres.integration.ts` verifies cross-instance persistence, concurrent revision conflicts, foreign-key rollback, and shared login throttling. Both require `DATABASE_URL` and can use a git-ignored env file:
+
+```sh
+node --env-file=.env.vercel.local --import tsx tests/postgres.integration.ts
+```
+
+The live-site verification is reproducible with `node --import tsx tests/deployed-check.ts https://crumb-cake-os.vercel.app`. It checks owner authentication, a non-destructive save, quotation privacy, deep links, 3D pixels, mobile controls, and logout. It reads the owner password locally without printing it.
+
+Only production is connected to the live database. Before enabling preview deployments, provision a separate preview database and authentication secrets; do not point experimental previews at production data.
 
 This is a single-business installation. Multi-user signup, automated email/WhatsApp delivery, a payment gateway, and generative AI are integration points rather than active external services. Payments record manually received funds. Share links work wherever the server is reachable; localhost links are usable on the same machine. Quotation export uses the browser's PDF/print flow.
 

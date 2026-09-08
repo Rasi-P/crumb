@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { createSeed } from "../src/domain/seed";
 import { stateSchema, type AppState } from "../src/domain/models";
+import { StateConflict } from "./storage/types";
 
 mkdirSync(".data", { recursive: true });
 const db = new DatabaseSync(process.env.DATABASE_PATH || ".data/crumb.sqlite");
@@ -15,7 +16,8 @@ CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, data TEXT NOT NUL
 CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, design_id TEXT NOT NULL REFERENCES designs(id), data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES customers(id), design_id TEXT NOT NULL REFERENCES designs(id), data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS payments (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES orders(id), data TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS quotes (id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES customers(id), design_id TEXT NOT NULL REFERENCES designs(id), order_id TEXT REFERENCES orders(id), data TEXT NOT NULL);`);
+CREATE TABLE IF NOT EXISTS quotes (id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES customers(id), design_id TEXT NOT NULL REFERENCES designs(id), order_id TEXT REFERENCES orders(id), data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS login_attempts (key TEXT PRIMARY KEY, count INTEGER NOT NULL, expires INTEGER NOT NULL);`);
 const simple = [
   "customers",
   "designs",
@@ -24,10 +26,21 @@ const simple = [
   "notifications",
 ] as const;
 const related = ["products", "orders", "payments", "quotes"] as const;
-export function saveState(raw: AppState) {
+export function saveState(raw: AppState, expectedRevision?: number) {
   const s = stateSchema.parse(raw);
   db.exec("BEGIN IMMEDIATE");
   try {
+    if (expectedRevision !== undefined) {
+      const row = db
+        .prepare("SELECT revision FROM business WHERE id = ?")
+        .get("luna");
+      if (row?.revision !== expectedRevision)
+        throw new StateConflict(loadState());
+      if (s.revision !== expectedRevision + 1)
+        throw new Error(
+          "A workspace update must advance its revision exactly once.",
+        );
+    }
     for (const table of ["quotes", "payments", "orders", "products", ...simple])
       db.exec(`DELETE FROM ${table}`);
     db.prepare(
@@ -69,6 +82,17 @@ export function saveState(raw: AppState) {
     db.exec("ROLLBACK");
     throw error;
   }
+}
+export function consumeLoginAttempt(key: string) {
+  const now = Date.now();
+  db.prepare("DELETE FROM login_attempts WHERE expires < ?").run(now);
+  const row = db
+    .prepare(
+      `INSERT INTO login_attempts (key,count,expires) VALUES (?,1,?)
+    ON CONFLICT(key) DO UPDATE SET count = login_attempts.count + 1 RETURNING count`,
+    )
+    .get(key, now + 900000);
+  return Number(row?.count) <= 10;
 }
 export function loadState(): AppState {
   const business = db

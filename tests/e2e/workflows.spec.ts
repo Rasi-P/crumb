@@ -276,6 +276,20 @@ test("mobile navigation and studio property sheets stay within the viewport", as
   expect(
     await page.locator("body").evaluate((el) => el.scrollWidth <= innerWidth),
   ).toBe(true);
+  await expect(page.locator(".studio-properties")).toHaveAttribute("inert", "");
+  await page.setViewportSize({ width: 834, height: 1194 });
+  await page
+    .locator(".studio-mobile-toolbar")
+    .getByRole("button", { name: "Customize", exact: true })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "Cake properties and pricing" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Close properties" }),
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".studio-properties")).toHaveAttribute("inert", "");
 });
 
 test("server conflicts protect newer changes and customer links expose only quotation data", async ({

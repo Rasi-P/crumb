@@ -603,9 +603,8 @@ function CameraControls({
       6.2,
       height * 2.35,
       config.tiers[0].diameter * 0.78,
-      ((config.tiers[0].diameter * 0.135 + 0.34) /
-        (Math.tan(Math.PI / 10) * aspect)) *
-        1.2,
+      (config.tiers[0].diameter * 0.135 + 0.34) /
+        (Math.tan(Math.PI / 10) * aspect),
     );
     const v =
       view === "Front"
