@@ -56,6 +56,56 @@ export const decorations = [
 ] as const;
 const money = z.number().finite().min(0).max(10000000);
 const color = z.string().regex(/^#[0-9a-fA-F]{6}$/);
+const vector3 = z.tuple([
+  z.number().finite(),
+  z.number().finite(),
+  z.number().finite(),
+]);
+export const materialNames = [
+  "Buttercream",
+  "Fondant",
+  "Cream",
+  "Chocolate",
+  "Gold",
+  "Silver",
+  "Petal",
+  "Satin",
+] as const;
+export const attachmentSchema = z.object({
+  tierId: z.string(),
+  surface: z.enum(["top", "side"]),
+  // Radians, normalized radius, normalized height, and outward offset in inches.
+  angle: z.number().finite(),
+  radius: z.number().min(0).max(1),
+  height: z.number().min(0).max(1),
+  offset: z.number().min(-0.1).max(2),
+});
+export const cakeObjectSchema = z.object({
+  id: z.string().min(1),
+  assetId: z.string().min(1).max(120),
+  name: z.string().min(1).max(100),
+  attachment: attachmentSchema,
+  rotation: vector3,
+  scale: z.number().min(0.1).max(4),
+  color,
+  material: z.enum(materialNames),
+  seed: z.number().int(),
+  hidden: z.boolean(),
+  locked: z.boolean(),
+  unitPrice: money,
+});
+const letteringSchema = z.object({
+  font: z.enum(["helvetiker", "optimer", "great-vibes"]),
+  size: z.number().min(0.15).max(1.5),
+  depth: z.number().min(0.02).max(0.3),
+  color,
+  material: z.enum(materialNames),
+  position: vector3,
+  rotation: vector3,
+  scale: z.number().min(0.2).max(3),
+  hidden: z.boolean(),
+  locked: z.boolean(),
+});
 export const tierSchema = z.object({
   id: z.string(),
   diameter: z.number().min(4).max(16),
@@ -69,27 +119,95 @@ export const tierSchema = z.object({
     "Minimal",
     "Ruffled",
     "Drip",
+    "Rough",
+    "Semi-naked",
+    "Naked",
+    "Piped",
   ]),
   decorations: z.array(z.enum(decorations)).max(11),
+  shape: z.enum(["Round", "Square", "Heart", "Number", "Custom"]).optional(),
+  position: z
+    .tuple([z.number().min(-8).max(8), z.number().min(-8).max(8)])
+    .optional(),
+  spacing: z.number().min(0).max(4).optional(),
+  roughness: z.number().min(0.1).max(1).optional(),
+  specular: z.number().min(0).max(1).optional(),
+  imperfection: z.number().min(0).max(1).optional(),
+  frostingThickness: z.number().min(0.02).max(0.3).optional(),
+  hidden: z.boolean().optional(),
+  locked: z.boolean().optional(),
 });
-export const cakeSchema = z.object({
-  version: z.literal(1),
-  shape: z.enum(["Round", "Square", "Heart", "Number", "Custom"]),
-  tiers: z.array(tierSchema).min(1).max(4),
-  flavor: z.string().min(1),
-  text: z.string().max(80),
-  textColor: color,
-  textStyle: z.enum(["Elegant", "Modern", "Playful"]),
-  textSize: z.number().min(12).max(40),
-  topper: z.string().max(50),
-  number: z.string().max(2),
-  boardColor: color,
-  sellingPrice: money.nullable(),
-  delivery: money,
-  discount: money,
-  tax: z.number().min(0).max(40),
-});
+export const cakeSchema = z
+  .object({
+    version: z.literal(1),
+    shape: z.enum(["Round", "Square", "Heart", "Number", "Custom"]),
+    tiers: z.array(tierSchema).min(1).max(4),
+    flavor: z.string().min(1),
+    text: z.string().max(80),
+    textColor: color,
+    textStyle: z.enum(["Elegant", "Modern", "Playful"]),
+    textSize: z.number().min(12).max(40),
+    topper: z.string().max(50),
+    number: z.string().max(2),
+    boardColor: color,
+    sellingPrice: money.nullable(),
+    delivery: money,
+    discount: money,
+    tax: z.number().min(0).max(40),
+    sceneVersion: z.literal(2).optional(),
+    cakeId: z.string().optional(),
+    objects: z.array(cakeObjectSchema).max(1500).optional(),
+    board: z
+      .object({
+        diameter: z.number().min(4).max(24),
+        thickness: z.number().min(0.1).max(1),
+        material: z.enum(materialNames),
+      })
+      .optional(),
+    background: z
+      .object({ color, exposure: z.number().min(0.4).max(2) })
+      .optional(),
+    camera: z
+      .object({
+        view: z.enum(["Perspective", "Front", "Side", "Top", "Close-up"]),
+        zoom: z.number().min(-3).max(8),
+      })
+      .optional(),
+    lettering: z
+      .object({ text: letteringSchema, topper: letteringSchema })
+      .optional(),
+  })
+  .superRefine((cake, ctx) => {
+    const ids = new Set<string>(["board", "text", "topper"]);
+    for (const [i, t] of cake.tiers.entries()) {
+      if (ids.has(t.id))
+        ctx.addIssue({
+          code: "custom",
+          message: "Every scene object must have a unique ID",
+          path: ["tiers", i, "id"],
+        });
+      ids.add(t.id);
+    }
+    for (const [i, o] of (cake.objects || []).entries()) {
+      if (ids.has(o.id))
+        ctx.addIssue({
+          code: "custom",
+          message: "Every scene object must have a unique ID",
+          path: ["objects", i, "id"],
+        });
+      ids.add(o.id);
+      if (!cake.tiers.some((t) => t.id === o.attachment.tierId))
+        ctx.addIssue({
+          code: "custom",
+          message: "A decoration refers to a missing tier",
+          path: ["objects", i, "attachment", "tierId"],
+        });
+    }
+  });
 export type CakeConfig = z.infer<typeof cakeSchema>;
+export type CakeConfiguration = CakeConfig;
+export type CakeObject = z.infer<typeof cakeObjectSchema>;
+export type Attachment = z.infer<typeof attachmentSchema>;
 export type Tier = z.infer<typeof tierSchema>;
 export const customerSchema = z.object({
   id: z.string(),

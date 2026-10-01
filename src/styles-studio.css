@@ -1,3 +1,4 @@
+@font-face { font-family: "Great Vibes"; src: url("/assets/fonts/GreatVibes-Regular.ttf") format("truetype"); font-display: swap; }
 .studio-shell {
   height: 100dvh;
   display: flex;
@@ -1827,4 +1828,306 @@ html[data-theme="dark"] .studio-profit {
 }
 html[data-theme="dark"] .selected-decoration {
   background: #342b3c;
+}
+
+/* Structured scene editor */
+.tier-properties,
+.scene-inspector,
+.studio-section fieldset,
+fieldset.studio-section {
+  border: 0;
+  margin: 0;
+  min-width: 0;
+}
+.tier-properties {
+  padding: 0;
+}
+fieldset:disabled {
+  opacity: 0.65;
+}
+.scene-actions {
+  display: flex;
+  gap: 3px;
+  padding: 10px 17px;
+  border-bottom: 1px solid var(--border);
+}
+.scene-actions .icon-button {
+  width: 31px;
+  height: 30px;
+}
+.scene-toolstrip {
+  position: absolute;
+  z-index: 5;
+  top: 90px;
+  left: 24px;
+  display: flex;
+  gap: 3px;
+  padding: 5px;
+  background: #fffdf9e8;
+  border: 1px solid #ddd4ce;
+  border-radius: 8px;
+  box-shadow: 0 3px 14px #38241a08;
+}
+.scene-toolstrip button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px;
+  color: #756978;
+  border-radius: 5px;
+  font-size: 11px;
+}
+.scene-toolstrip button.active {
+  background: #eee3ee;
+  color: #70557c;
+}
+.scene-toolstrip button:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+.scene-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 113px;
+  transform: translateX(-50%);
+  z-index: 4;
+  background: #fffbf4de;
+  border: 1px solid #dfd5ca;
+  border-radius: 20px;
+  padding: 8px 14px;
+  font-size: 11px;
+  color: #786758;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.asset-library > input {
+  margin: 14px 0 10px;
+}
+.asset-library h4 {
+  font-size: 11px;
+  color: #7d6c72;
+  margin: 18px 0 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+}
+.asset-library .decorations-picker {
+  gap: 8px;
+}
+.asset-library .decorations-picker button {
+  border: 1px solid #ece6e3;
+  border-radius: 7px;
+  overflow: hidden;
+  padding: 0 0 8px;
+  cursor: grab;
+}
+.asset-library .decorations-picker button:active {
+  cursor: grabbing;
+}
+.asset-thumbnail {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 64px;
+  width: 100%;
+  background: linear-gradient(135deg, #f7f1ec, #eee4df);
+}
+.asset-thumbnail img {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+}
+.asset-pearl {
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  box-shadow:
+    inset -5px -6px 8px #55433144,
+    inset 5px 4px 7px #ffffffaf,
+    1px 4px 6px #59473633;
+}
+.asset-leaf {
+  background: currentColor;
+  width: 35px;
+  height: 18px;
+  border-radius: 100% 0 100% 0;
+  transform: rotate(-25deg);
+}
+.asset-library .decorations-picker button > span:nth-child(2) {
+  font-size: 10px;
+  margin-top: 7px;
+}
+.asset-library .decorations-picker small {
+  font-size: 9px;
+  color: #9a8990;
+}
+.layer-children {
+  padding-left: 14px;
+  border-left: 1px solid #ece4eb;
+  margin-left: 21px;
+}
+.layer-children summary {
+  padding: 9px 5px;
+  font-size: 11px;
+  color: #84728c;
+  cursor: pointer;
+}
+.layer-children summary span {
+  float: right;
+  margin-right: 12px;
+}
+.layers-panel .layer-children button {
+  font-size: 10px;
+  padding: 8px 8px;
+  min-height: 31px;
+}
+.layers-panel .layer-hidden {
+  opacity: 0.45;
+}
+.layer-children button span:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reference-import {
+  margin: 0 14px 18px;
+  padding: 13px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  border: 1px solid #d9c9d6;
+  border-radius: 7px;
+  background: linear-gradient(135deg, #f7f0f7, #faf5ee);
+  color: #785e7f;
+}
+.reference-import strong {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+}
+.reference-import small {
+  display: block;
+  font-size: 9px;
+  color: #8b7987;
+  margin-top: 4px;
+  line-height: 1.5;
+}
+.studio-section details > summary {
+  font-size: 11px;
+  cursor: pointer;
+  color: #796880;
+  margin-bottom: 12px;
+}
+.transform-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+.transform-fields label {
+  font-size: 9px;
+}
+.studio-file-error {
+  padding: 10px 24px;
+  background: #fff0ed;
+  color: #964a42;
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+}
+.image-cake-workflow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 25px;
+}
+.reference-photo {
+  background: #f3ede7;
+  border-radius: 10px;
+  padding: 18px;
+  align-self: start;
+  text-align: center;
+}
+.reference-photo img {
+  width: 100%;
+  height: 310px;
+  object-fit: contain;
+  margin-bottom: 16px;
+}
+.reference-photo > svg {
+  margin: 65px auto;
+  color: #bba2b2;
+}
+.reference-photo p,
+.reference-analysis p {
+  font-size: 12px;
+  color: #8a7777;
+  line-height: 1.7;
+}
+.reference-analysis {
+  max-height: 65vh;
+  overflow: auto;
+  padding-right: 5px;
+}
+.reference-analysis .field {
+  margin-top: 12px;
+}
+.reference-tier {
+  border-bottom: 1px solid #e8dfe4;
+  padding: 14px 0;
+}
+.reference-tier > strong {
+  font-size: 12px;
+}
+.analysis-confidence {
+  background: #f7f0e4;
+  padding: 9px 12px;
+  border-radius: 5px;
+}
+.reference-analysis details {
+  margin-top: 17px;
+  font-size: 12px;
+}
+@media (max-width: 960px) {
+  .scene-toolstrip {
+    top: 75px;
+    left: 15px;
+  }
+  .scene-toolstrip button span {
+    display: none;
+  }
+  .scene-hint {
+    bottom: 117px;
+    font-size: 10px;
+    max-width: 90%;
+    white-space: normal;
+    text-align: center;
+  }
+  .image-cake-workflow {
+    grid-template-columns: 1fr;
+  }
+  .reference-photo img {
+    height: 170px;
+  }
+  .reference-analysis {
+    max-height: none;
+  }
+  .studio-toolbar-actions > button[aria-label="Import cake JSON"],
+  .studio-toolbar-actions > button[aria-label="Export cake JSON"] {
+    display: none;
+  }
+}
+.layers-panel .layer-children button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  white-space: nowrap;
+  color: var(--secondary);
+}
+.layers-panel .layer-children button.selected {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+.layers-panel .layer-children .tiny-color {
+  margin-left: 0;
 }

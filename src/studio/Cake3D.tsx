@@ -1,12 +1,38 @@
-import { Suspense, useEffect, useMemo, useRef } from "react";
+import {
+  Component,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { Canvas, useThree } from "@react-three/fiber";
-import { ContactShadows, OrbitControls } from "@react-three/drei";
-import * as THREE from "three";
-import { FontLoader } from "three/examples/jsm/loaders/FontLoader.js";
-import fontData from "./assets/helvetiker_regular.typeface.json";
+import { Environment, OrbitControls } from "@react-three/drei";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
-import type { CakeConfig, Tier } from "../domain/models";
-
+import * as THREE from "three";
+import type {
+  Attachment,
+  CakeConfig,
+  CakeObject,
+  Tier,
+} from "../domain/models";
+import {
+  assetById,
+  attachmentFromPoint,
+  normalizeCake,
+  tierLayout,
+  UNIT,
+  perimeterRadius,
+  type TierLayout,
+} from "../domain/cakeScene";
+import { tierGeometry, dripGeometry } from "./scene/geometry";
+import { FrostingMaterial, ObjectMaterial } from "./scene/materials";
+import { Decoration, SmallDecorations } from "./scene/Decorations";
+import { Lettering } from "./scene/Lettering";
+import { StudioPostprocessing } from "./scene/StudioPostprocessing";
+import { ContactShadow } from "./scene/ContactShadow";
+import { Cake2D } from "./Cake2D";
 type Props = {
   config: CakeConfig;
   selected?: string;
@@ -15,575 +41,371 @@ type Props = {
   zoom?: number;
   reset?: number;
   autoRotate?: boolean;
+  tool?: string;
+  onObjectChange?: (o: CakeObject) => void;
+  onPlace?: (assetId: string, attachment: Attachment) => void;
 };
-const font = new FontLoader().parse(fontData);
-function FrostingShape({
+function TierMesh({
+  layout,
   shape,
-  radius,
-  height,
-  color,
+  selected,
+  onSelect,
   number,
 }: {
-  shape: CakeConfig["shape"];
-  radius: number;
-  height: number;
-  color: string;
   number: string;
+  layout: TierLayout;
+  shape: CakeConfig["shape"];
+  selected: boolean;
+  onSelect?: Props["onSelect"];
 }) {
-  const geometry = useMemo(() => {
-    if (shape === "Round")
-      return new THREE.CylinderGeometry(radius, radius, height, 80);
-    if (shape === "Square")
-      return new THREE.BoxGeometry(radius * 1.7, height, radius * 1.7, 1, 1, 1);
-    let path: THREE.Shape | THREE.Shape[];
-    if (shape === "Heart") {
-      const heart = new THREE.Shape();
-      heart.moveTo(0, -0.72);
-      heart.bezierCurveTo(-0.35, -0.4, -1.2, 0.1, -0.9, 0.65);
-      heart.bezierCurveTo(-0.6, 1.15, -0.1, 0.85, 0, 0.55);
-      heart.bezierCurveTo(0.1, 0.85, 0.6, 1.15, 0.9, 0.65);
-      heart.bezierCurveTo(1.2, 0.1, 0.35, -0.4, 0, -0.72);
-      path = heart;
-    } else if (shape === "Number")
-      path = font.generateShapes(number || "10", 1.6);
-    else {
-      const custom = new THREE.Shape();
-      for (let i = 0; i <= 160; i++) {
-        const a = (i / 160) * Math.PI * 2;
-        const r = 1 + Math.cos(a * 6) * 0.1;
-        const x = Math.cos(a) * r;
-        const y = Math.sin(a) * r;
-        if (!i) custom.moveTo(x, y);
-        else custom.lineTo(x, y);
-      }
-      path = custom;
-    }
-    const geo = new THREE.ExtrudeGeometry(path, {
-      depth: height,
-      bevelEnabled: true,
-      bevelSize: 0.025,
-      bevelThickness: 0.025,
-      bevelSegments: 3,
-      steps: 1,
-      curveSegments: 24,
-    });
-    geo.computeBoundingBox();
-    const size = new THREE.Vector3();
-    geo.boundingBox!.getSize(size);
-    geo.translate(
-      -(geo.boundingBox!.max.x + geo.boundingBox!.min.x) / 2,
-      -(geo.boundingBox!.max.y + geo.boundingBox!.min.y) / 2,
-      -height / 2,
-    );
-    geo.scale((radius * 1.8) / size.x, (radius * 1.8) / size.y, 1);
-    geo.rotateX(-Math.PI / 2);
-    return geo;
-  }, [shape, radius, height, number]);
-  useEffect(() => () => geometry.dispose(), [geometry]);
-  return (
-    <mesh castShadow receiveShadow geometry={geometry}>
-      <meshStandardMaterial color={color} roughness={0.78} />
-    </mesh>
+  const { tier, radius, height, bottom, x, z } = layout;
+  const geometry = useMemo(
+    () => tierGeometry(tier, tier.shape ?? shape, radius, height, number),
+    [
+      tier.shape,
+      tier.finish,
+      tier.imperfection,
+      tier.frostingThickness,
+      shape,
+      number,
+      radius,
+      height,
+    ],
   );
-}
-function Rose({
-  position,
-  size = 0.19,
-  color = "#e9b8c5",
-  flower = false,
-}: {
-  position: [number, number, number];
-  size?: number;
-  color?: string;
-  flower?: boolean;
-}) {
+  const drip = useMemo(
+    () =>
+      tier.finish === "Drip"
+        ? dripGeometry(radius, height, tier.shape ?? shape)
+        : null,
+    [tier.finish, tier.shape, radius, height, shape],
+  );
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  useEffect(() => () => drip?.dispose(), [drip]);
+  if (tier.hidden) return null;
   return (
-    <group position={position} rotation={[0.15, 0.4, -0.18]}>
-      {[0, 1].map((ring) =>
-        Array.from({ length: ring ? 6 : 8 }, (_, i) => {
-          const angle = (i / (ring ? 6 : 8)) * Math.PI * 2 + ring * 0.3;
-          return (
-            <mesh
-              key={`${ring}-${i}`}
-              castShadow
-              position={[
-                Math.cos(angle) * size * (ring ? 0.29 : 0.6),
-                ring * 0.055,
-                Math.sin(angle) * size * (ring ? 0.29 : 0.6),
-              ]}
-              rotation={[Math.sin(angle) * 0.55, angle, Math.cos(angle) * 0.55]}
-              scale={[
-                size * (ring ? 0.58 : 0.8),
-                size * 0.28,
-                size * (ring ? 0.62 : 0.8),
-              ]}
-            >
-              <sphereGeometry args={[1, 12, 8]} />
-              <meshStandardMaterial
-                color={flower ? "#fff9ee" : ring ? "#efc4ce" : color}
-                roughness={0.8}
-              />
-            </mesh>
-          );
-        }),
-      )}
-      <mesh position={[0, 0.07, 0]} castShadow>
-        <sphereGeometry args={[size * 0.3, 14, 10]} />
-        <meshStandardMaterial color={flower ? "#d7ba67" : "#d69cad"} />
+    <group position={[x, bottom, z]}>
+      <mesh
+        geometry={geometry}
+        userData={{ tierId: tier.id }}
+        castShadow
+        receiveShadow
+        onClick={(e) => {
+          e.stopPropagation();
+          onSelect?.(tier.id);
+        }}
+      >
+        <FrostingMaterial tier={tier} />
       </mesh>
-      {[-1, 1].map((sign, i) => (
-        <mesh
-          key={sign}
-          position={[sign * size * 1.08, -0.03, size * 0.2]}
-          rotation={[0.2, sign * 0.7, sign * 0.3]}
-          scale={[size * 0.85, size * 0.12, size * 0.34]}
-        >
-          <sphereGeometry args={[1, 10, 6]} />
-          <meshStandardMaterial
-            color={i ? "#99aa84" : "#809575"}
-            roughness={0.9}
+      {drip && (
+        <mesh geometry={drip} castShadow receiveShadow>
+          <meshPhysicalMaterial
+            color={tier.frosting === "Ganache" ? "#3c2118" : "#fff0d4"}
+            roughness={0.29}
+            clearcoat={0.18}
+            side={THREE.DoubleSide}
           />
         </mesh>
-      ))}
-    </group>
-  );
-}
-function DecorationSet({
-  tier,
-  radius,
-  y,
-  index,
-}: {
-  tier: Tier;
-  radius: number;
-  y: number;
-  index: number;
-}) {
-  const has = (s: string) =>
-    tier.decorations.includes(s as Tier["decorations"][number]);
-  const coords = (angle: number, r = radius) =>
-    [Math.cos(angle) * r, y, Math.sin(angle) * r] as [number, number, number];
-  return (
-    <group>
-      {(has("Roses") || has("Flowers")) &&
-        [0.45, 0.82, 1.12, 3.6].map((angle, n) => (
-          <Rose
-            key={angle}
-            position={[
-              Math.cos(angle) * radius * 0.86,
-              y + 0.045,
-              Math.sin(angle) * radius * 0.86,
-            ]}
-            size={n === 0 ? 0.19 : n === 3 ? 0.18 : 0.13}
-            flower={has("Flowers") && !has("Roses")}
-          />
-        ))}
-      {has("Pearls") &&
-        Array.from({ length: 36 }, (_, i) => {
-          const a = (i / 36) * Math.PI * 2;
-          return (
-            <mesh
-              key={i}
-              castShadow
-              position={[
-                Math.cos(a) * (radius + 0.007),
-                y - tier.height * 0.27 + 0.045,
-                Math.sin(a) * (radius + 0.007),
-              ]}
-            >
-              <sphereGeometry args={[0.034, 10, 8]} />
-              <meshStandardMaterial
-                color="#d5b971"
-                metalness={0.65}
-                roughness={0.28}
-              />
-            </mesh>
-          );
-        })}
-      {has("Gold accents") &&
-        Array.from({ length: 32 }, (_, i) => {
-          const angle = i * 2.399;
-          const h = y - (((i * 17) % 83) / 100) * tier.height * 0.27 - 0.04;
-          return (
-            <mesh
-              key={i}
-              position={[
-                Math.cos(angle) * (radius + 0.007),
-                h,
-                Math.sin(angle) * (radius + 0.007),
-              ]}
-              rotation={[0, -angle + Math.PI / 2, i * 0.7]}
-              scale={[0.015 + (i % 3) * 0.014, 0.03 + (i % 4) * 0.012, 1]}
-            >
-              <circleGeometry args={[1, 5]} />
-              <meshStandardMaterial
-                color="#d1b677"
-                metalness={0.4}
-                roughness={0.4}
-                side={THREE.DoubleSide}
-              />
-            </mesh>
-          );
-        })}
-      {has("Sprinkles") &&
-        Array.from({ length: 100 }, (_, i) => {
-          const angle = i * 2.399;
-          return (
-            <mesh
-              key={i}
-              position={[
-                Math.cos(angle) * (radius + 0.012),
-                y - 0.035 - (((i * 17) % 87) / 100) * tier.height * 0.27,
-                Math.sin(angle) * (radius + 0.012),
-              ]}
-              rotation={[i * 0.42, 0, i * 0.77]}
-            >
-              <capsuleGeometry args={[0.011, 0.047, 3, 5]} />
-              <meshStandardMaterial
-                color={
-                  ["#d5a0c1", "#95bed7", "#ead391", "#a9bd90", "#b4a0cf"][i % 5]
-                }
-              />
-            </mesh>
-          );
-        })}
-      {has("Macarons") &&
-        [0.7, 1.4, 2.1].map((angle, i) => (
-          <group
-            key={angle}
-            position={coords(angle, radius * 0.67)}
-            rotation={[0, angle, 0.22]}
-          >
-            <mesh position={[0, 0.085, 0]} castShadow>
-              <sphereGeometry args={[0.13, 20, 14]} />
-              <meshStandardMaterial
-                color={["#d9bbca", "#bccba1", "#e3b3a2"][i]}
-              />
-            </mesh>
-            <mesh position={[0, 0.085, 0]} rotation={[Math.PI / 2, 0, 0]}>
-              <torusGeometry args={[0.129, 0.016, 6, 24]} />
-              <meshStandardMaterial color="#fff4e3" />
-            </mesh>
-          </group>
-        ))}
-      {has("Chocolate") &&
-        [0.3, 1, 1.7, 2.4, 3.1].map((a, i) => (
-          <mesh
-            key={a}
-            position={[
-              Math.cos(a) * radius * 0.6,
-              y + 0.13,
-              Math.sin(a) * radius * 0.6,
-            ]}
-            rotation={[0.25, a, 0.25]}
-            castShadow
-          >
-            <boxGeometry args={[0.17, 0.35, 0.065]} />
-            <meshStandardMaterial
-              color={i % 2 ? "#573729" : "#392720"}
-              roughness={0.36}
-            />
-          </mesh>
-        ))}
-      {has("Fruit") &&
-        [0.5, 1.1, 1.7, 2.3, 2.9].map((a) => (
-          <group key={a} position={coords(a, radius * 0.66)}>
-            <mesh position={[0, 0.1, 0]} castShadow scale={[1, 1.35, 1]}>
-              <sphereGeometry args={[0.1, 14, 10]} />
-              <meshStandardMaterial color="#be5053" roughness={0.48} />
-            </mesh>
-            {[0, 1, 2, 3].map((i) => (
-              <mesh
-                key={i}
-                position={[0, 0.235, 0]}
-                rotation={[Math.PI / 2, 0, (i * Math.PI) / 2]}
-                scale={[1, 0.35, 1]}
-              >
-                <coneGeometry args={[0.045, 0.12, 3]} />
-                <meshStandardMaterial color="#778e62" />
-              </mesh>
-            ))}
-          </group>
-        ))}
-      {has("Ribbons") && (
-        <>
-          <mesh position={[0, y - tier.height * 0.27 + 0.13, 0]}>
-            <cylinderGeometry
-              args={[radius + 0.01, radius + 0.01, 0.105, 80, 1, true]}
-            />
-            <meshStandardMaterial
-              color="#be859b"
-              roughness={0.65}
-              side={THREE.DoubleSide}
-            />
-          </mesh>
-          {[-1, 1].map((sign) => (
-            <mesh
-              key={sign}
-              position={[
-                sign * 0.1,
-                y - tier.height * 0.27 + 0.13,
-                radius + 0.04,
-              ]}
-              rotation={[0, 0, sign * 0.3]}
-              scale={[1, 0.55, 0.25]}
-            >
-              <torusGeometry args={[0.12, 0.035, 8, 18]} />
-              <meshStandardMaterial color="#d19aad" />
-            </mesh>
-          ))}
-        </>
       )}
-      {has("Characters") && (
-        <group position={[0, y + 0.12, 0]}>
-          <mesh position={[0, 0.19, 0]} castShadow>
-            <sphereGeometry args={[0.2, 20, 14]} />
-            <meshStandardMaterial color="#d9bc94" />
-          </mesh>
-          {[-1, 1].map((sign) => (
-            <group key={sign}>
-              <mesh position={[sign * 0.15, 0.36, 0]}>
-                <sphereGeometry args={[0.09, 14, 10]} />
-                <meshStandardMaterial color="#d9bc94" />
-              </mesh>
-              <mesh position={[sign * 0.075, 0.22, 0.18]}>
-                <sphereGeometry args={[0.017, 10, 8]} />
-                <meshStandardMaterial color="#423531" />
-              </mesh>
-            </group>
-          ))}
-          <mesh position={[0, 0.14, 0.18]} scale={[1, 0.8, 0.6]}>
-            <sphereGeometry args={[0.07, 14, 10]} />
-            <meshStandardMaterial color="#f2ddbc" />
-          </mesh>
-          <mesh position={[0, 0.17, 0.223]}>
-            <sphereGeometry args={[0.022, 10, 8]} />
-            <meshStandardMaterial color="#665044" />
-          </mesh>
-        </group>
-      )}
-      {has("Leaves") &&
-        Array.from({ length: 8 }, (_, i) => (
-          <mesh
-            key={i}
-            position={coords(3.2 + i * 0.12, radius * 0.85)}
-            rotation={[0, i * 0.4, 0]}
-            scale={[0.14, 0.019, 0.047]}
-          >
-            <sphereGeometry args={[1, 10, 6]} />
-            <meshStandardMaterial color={i % 2 ? "#a2b190" : "#859b7c"} />
-          </mesh>
-        ))}
-    </group>
-  );
-}
-function Lettering({
-  text,
-  color,
-  position,
-  size = 1.3,
-  style = "Elegant",
-  radius,
-}: {
-  text: string;
-  color: string;
-  position: [number, number, number];
-  size?: number;
-  style?: string;
-  radius?: number;
-}) {
-  const texture = useMemo(() => {
-    const canvas = document.createElement("canvas");
-    canvas.width = 1024;
-    canvas.height = 256;
-    const ctx = canvas.getContext("2d")!;
-    ctx.clearRect(0, 0, 1024, 256);
-    ctx.fillStyle = color;
-    ctx.font = `${style === "Elegant" ? "italic " : ""}${text.length > 25 ? 56 : 72}px ${style === "Modern" ? "sans-serif" : style === "Playful" ? "cursive" : "Georgia"}`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(text, 512, 128, 990);
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    return tex;
-  }, [text, color, style]);
-  useEffect(() => () => texture.dispose(), [texture]);
-  const geometry = useMemo(() => {
-    const plane = new THREE.PlaneGeometry(size, size / 4, 64, 1);
-    if (radius) {
-      const points = plane.attributes.position;
-      for (let i = 0; i < points.count; i++) {
-        const angle = points.getX(i) / radius;
-        points.setX(i, Math.sin(angle) * radius);
-        points.setZ(i, Math.cos(angle) * radius);
-      }
-      plane.computeVertexNormals();
-    }
-    return plane;
-  }, [size, radius]);
-  useEffect(() => () => geometry.dispose(), [geometry]);
-  return (
-    <mesh position={position} geometry={geometry}>
-      <meshBasicMaterial
-        map={texture}
-        transparent
-        side={THREE.DoubleSide}
-        depthWrite={false}
-      />
-    </mesh>
-  );
-}
-function Scene({ config, selected, onSelect }: Props) {
-  let base = 0.16;
-  const tiers = config.tiers.map((t) => {
-    const h = t.height * 0.27;
-    const item = {
-      tier: t,
-      y: base + h / 2,
-      top: base + h,
-      r: t.diameter * 0.135,
-      h,
-    };
-    base += h;
-    return item;
-  });
-  const bottom = tiers[0];
-  const top = tiers[tiers.length - 1];
-  return (
-    <group>
-      <mesh position={[0, 0.08, 0]} receiveShadow castShadow>
-        <cylinderGeometry args={[bottom.r + 0.25, bottom.r + 0.25, 0.11, 96]} />
-        <meshStandardMaterial color={config.boardColor} roughness={0.48} />
-      </mesh>
-      {tiers.map(({ tier, y, top, r, h }, i) => (
-        <group
-          key={tier.id}
-          onClick={(e) => {
-            e.stopPropagation();
-            onSelect?.(tier.id);
-          }}
-        >
-          <group position={[0, y, 0]}>
-            <FrostingShape
-              shape={config.shape}
-              radius={r}
-              height={h}
-              color={tier.color}
-              number={config.number}
-            />
-          </group>
-          {config.shape === "Round" &&
-            ["Textured", "Vintage", "Ruffled"].includes(tier.finish) &&
-            Array.from({ length: Math.round(h / 0.075) }, (_, n) => (
-              <mesh
-                key={n}
-                position={[0, top - h + 0.055 + n * 0.075, 0]}
-                rotation={[Math.PI / 2, 0, 0]}
-              >
-                <torusGeometry
-                  args={[
-                    r + 0.001,
-                    tier.finish === "Ruffled" ? 0.018 : 0.005,
-                    5,
-                    80,
-                  ]}
-                />
-                <meshStandardMaterial color={tier.color} roughness={0.9} />
-              </mesh>
-            ))}
-          {tier.finish === "Vintage" &&
-            [top, top - h + 0.03].map((height, n) =>
-              Array.from({ length: 40 }, (_, p) => {
-                const a = (p / 40) * Math.PI * 2;
-                return (
-                  <mesh
-                    key={`${n}-${p}`}
-                    position={[Math.cos(a) * r, height, Math.sin(a) * r]}
-                    scale={[1, 0.8, 1]}
-                    castShadow
-                  >
-                    <sphereGeometry args={[0.055, 10, 8]} />
-                    <meshStandardMaterial color={tier.color} />
-                  </mesh>
-                );
-              }),
-            )}
-          {tier.finish === "Drip" &&
-            Array.from({ length: 24 }, (_, n) => {
-              const a = (n / 24) * Math.PI * 2;
-              const length = 0.1 + ((n * 13) % 21) / 100;
-              return (
-                <mesh
-                  key={n}
-                  position={[
-                    Math.cos(a) * (r + 0.003),
-                    top - length / 2,
-                    Math.sin(a) * (r + 0.003),
-                  ]}
-                  castShadow
-                >
-                  <capsuleGeometry args={[0.026, length, 5, 8]} />
-                  <meshStandardMaterial
-                    color={
-                      config.flavor === "Chocolate" ? "#38261f" : "#b4776f"
-                    }
-                    roughness={0.35}
-                  />
-                </mesh>
-              );
-            })}
-          <DecorationSet tier={tier} radius={r} y={top} index={i} />
-          {selected === tier.id && (
-            <mesh
-              position={[0, top - h + 0.01, 0]}
-              rotation={[Math.PI / 2, 0, 0]}
-            >
-              <torusGeometry args={[r + 0.055, 0.012, 6, 80]} />
-              <meshBasicMaterial color="#9c7cab" />
-            </mesh>
-          )}
-        </group>
-      ))}
-      {config.text && (
-        <Lettering
-          text={config.text}
-          color={config.textColor}
-          style={config.textStyle}
-          position={[
-            0,
-            bottom.y - 0.03,
-            config.shape === "Round" ? 0 : bottom.r + 0.012,
-          ]}
-          radius={config.shape === "Round" ? bottom.r + 0.013 : undefined}
-          size={Math.min(bottom.r * 1.6, config.textSize / 14)}
+      {["Vintage", "Piped", "Ruffled"].includes(tier.finish) && (
+        <Piping
+          radius={radius}
+          height={height}
+          tier={tier}
+          shape={tier.shape ?? shape}
         />
       )}{" "}
-      {config.topper && (
-        <group
-          onClick={(e) => {
-            e.stopPropagation();
-            onSelect?.("topper");
-          }}
-        >
-          {[-0.23, 0.23].map((x) => (
-            <mesh key={x} position={[x, top.top + 0.22, 0]}>
-              <cylinderGeometry args={[0.009, 0.009, 0.55, 6]} />
-              <meshStandardMaterial
-                color="#bba069"
-                metalness={0.6}
-                roughness={0.3}
-              />
-            </mesh>
-          ))}
-          <Lettering
-            text={config.topper}
-            color="#b29456"
-            position={[0, top.top + 0.51, 0.01]}
-            size={1.3}
+      {selected && (
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.006, 0]}>
+          <ringGeometry args={[radius + 0.025, radius + 0.032, 128]} />
+          <meshBasicMaterial
+            color="#947c9b"
+            transparent
+            opacity={0.5}
+            depthWrite={false}
           />
-        </group>
+        </mesh>
       )}
     </group>
+  );
+}
+function Piping({
+  radius,
+  height,
+  tier,
+  shape,
+}: {
+  radius: number;
+  height: number;
+  tier: Tier;
+  shape: CakeConfig["shape"];
+}) {
+  const geometry = useMemo(() => {
+    const points = [];
+    for (let i = 0; i <= 512; i++) {
+      const a = (i / 512) * Math.PI * 2;
+      const r =
+        perimeterRadius(shape, radius, a) + 0.005 + Math.sin(a * 55) * 0.013;
+      points.push(
+        new THREE.Vector3(
+          Math.cos(a) * r,
+          Math.cos(a * 55) * 0.015,
+          Math.sin(a) * r,
+        ),
+      );
+    }
+    return new THREE.TubeGeometry(
+      new THREE.CatmullRomCurve3(points),
+      512,
+      0.025,
+      6,
+      false,
+    );
+  }, [radius, shape]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  return (
+    <>
+      {[0.04, height - 0.01].map((y) => (
+        <mesh
+          key={y}
+          position={[0, y, 0]}
+          geometry={geometry}
+          castShadow
+          receiveShadow
+        >
+          <meshStandardMaterial color={tier.color} roughness={0.8} />
+        </mesh>
+      ))}
+    </>
+  );
+}
+function SurfacePlacement({
+  config,
+  selected,
+  tool,
+  onObjectChange,
+  onPlace,
+  onPreview,
+}: {
+  config: CakeConfig;
+  selected?: string;
+  tool?: string;
+  onObjectChange?: Props["onObjectChange"];
+  onPlace?: Props["onPlace"];
+  onPreview: (o: CakeObject | null) => void;
+}) {
+  const { gl, camera, scene } = useThree();
+  useEffect(() => {
+    const canvas = gl.domElement,
+      ray = new THREE.Raycaster();
+    let drag = false,
+      last: CakeObject | null = null;
+    const layouts = tierLayout(config);
+    const hit = (e: MouseEvent | DragEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      ray.setFromCamera(
+        new THREE.Vector2(
+          ((e.clientX - rect.left) / rect.width) * 2 - 1,
+          (-(e.clientY - rect.top) / rect.height) * 2 + 1,
+        ),
+        camera,
+      );
+      // Only tier surfaces can receive decorations. Avoid intersecting every
+      // petal and extruded letter on each pointer movement.
+      const surfaces: THREE.Object3D[] = [];
+      scene.traverseVisible((o) => {
+        if (o instanceof THREE.Mesh && o.userData.tierId) surfaces.push(o);
+      });
+      const hit = ray.intersectObjects(surfaces, false)[0];
+      if (!hit) return null;
+      const l = layouts.find((l) => l.tier.id === hit.object.userData.tierId)!;
+      return attachmentFromPoint(
+        hit.point.toArray(),
+        l,
+        config.shape,
+        (hit.face?.normal.y ?? 0) > 0.5,
+      );
+    };
+    const selectedObject = config.objects?.find(
+      (o) => o.id === selected && !o.locked && !o.hidden,
+    );
+    const move = (e: PointerEvent) => {
+      if (!drag || !selectedObject) return;
+      const attachment = hit(e);
+      if (attachment) {
+        const a = assetById(selectedObject.assetId);
+        if (!a?.allowedPlacements.includes(attachment.surface)) return;
+        last = { ...selectedObject, attachment };
+        onPreview(last);
+      }
+    };
+    const down = (e: PointerEvent) => {
+      if (tool !== "move" || !selectedObject || e.button !== 0) return;
+      drag = true;
+      canvas.setPointerCapture(e.pointerId);
+      move(e);
+    };
+    const up = (e: PointerEvent) => {
+      if (!drag) return;
+      drag = false;
+      if (last) onObjectChange?.(last);
+      last = null;
+      onPreview(null);
+      if (canvas.hasPointerCapture(e.pointerId))
+        canvas.releasePointerCapture(e.pointerId);
+    };
+    const cancel = () => {
+      drag = false;
+      last = null;
+      onPreview(null);
+    };
+    const over = (e: DragEvent) => {
+      if (e.dataTransfer?.types.includes("application/x-cake-asset")) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }
+    };
+    const drop = (e: DragEvent) => {
+      const id = e.dataTransfer?.getData("application/x-cake-asset");
+      if (!id) return;
+      e.preventDefault();
+      const attachment = hit(e),
+        a = assetById(id);
+      if (attachment && a?.allowedPlacements.includes(attachment.surface))
+        onPlace?.(id, attachment);
+    };
+    canvas.addEventListener("pointerdown", down);
+    canvas.addEventListener("pointermove", move);
+    canvas.addEventListener("pointerup", up);
+    canvas.addEventListener("pointercancel", cancel);
+    canvas.addEventListener("dragover", over);
+    canvas.addEventListener("drop", drop);
+    return () => {
+      canvas.removeEventListener("pointerdown", down);
+      canvas.removeEventListener("pointermove", move);
+      canvas.removeEventListener("pointerup", up);
+      canvas.removeEventListener("pointercancel", cancel);
+      canvas.removeEventListener("dragover", over);
+      canvas.removeEventListener("drop", drop);
+    };
+  }, [
+    config,
+    selected,
+    tool,
+    gl,
+    camera,
+    scene,
+    onObjectChange,
+    onPlace,
+    onPreview,
+  ]);
+  return null;
+}
+function CakeScene(props: Props) {
+  const { config, selected, onSelect } = props,
+    layouts = useMemo(() => tierLayout(config), [config]);
+  const [preview, setPreview] = useState<CakeObject | null>(null);
+  const objects = (config.objects || [])
+    .map((o) => (preview?.id === o.id ? preview : o))
+    .filter(
+      (o) =>
+        !o.hidden &&
+        !layouts.find((l) => l.tier.id === o.attachment.tierId)?.tier.hidden,
+    );
+  const small = objects.filter(
+    (o) =>
+      o.id !== selected &&
+      ["pearl", "sprinkle", "foil"].includes(assetById(o.assetId)?.kind || ""),
+  );
+  const other = objects.filter((o) => !small.includes(o));
+  const boardRadius =
+    Math.max(
+      config.board!.diameter / 2,
+      ...layouts.map(
+        (l) => l.radius / UNIT + Math.hypot(l.x, l.z) / UNIT + 0.4,
+      ),
+    ) * UNIT;
+  const boardGeometry = useMemo(
+    () =>
+      tierGeometry(
+        {
+          diameter: 8,
+          height: 2,
+          color: "#fff",
+          frosting: "Fondant",
+          finish: "Smooth",
+          decorations: [],
+          id: "board",
+          imperfection: 0.08,
+          frostingThickness: 0.06,
+        },
+        "Round",
+        boardRadius,
+        config.board!.thickness * UNIT,
+      ),
+    [boardRadius, config.board!.thickness],
+  );
+  useEffect(() => () => boardGeometry.dispose(), [boardGeometry]);
+  return (
+    <>
+      <mesh
+        geometry={boardGeometry}
+        castShadow
+        receiveShadow
+        onClick={(e) => {
+          e.stopPropagation();
+          onSelect?.("board");
+        }}
+      >
+        <ObjectMaterial
+          object={{
+            color: config.boardColor,
+            material: config.board!.material,
+          }}
+        />
+      </mesh>
+      {layouts.map((l) => (
+        <TierMesh
+          key={l.tier.id}
+          layout={l}
+          shape={config.shape}
+          number={config.number}
+          selected={selected === l.tier.id}
+          onSelect={props.tool === "move" ? undefined : onSelect}
+        />
+      ))}
+      <SmallDecorations
+        objects={small}
+        layouts={layouts}
+        shape={config.shape}
+        selected={selected}
+        onSelect={onSelect}
+      />
+      {other.map((o) => (
+        <Decoration
+          key={o.id}
+          object={o}
+          layout={layouts.find((l) => l.tier.id === o.attachment.tierId)!}
+          shape={config.shape}
+          selected={o.id === selected}
+          onSelect={onSelect}
+          onChange={props.onObjectChange}
+          tool={props.tool}
+        />
+      ))}
+      <Lettering
+        config={config}
+        kind="text"
+        layout={layouts[0]}
+        onSelect={onSelect}
+      />
+      <Lettering
+        config={config}
+        kind="topper"
+        layout={layouts[layouts.length - 1]}
+        onSelect={onSelect}
+      />
+      <SurfacePlacement {...props} onPreview={setPreview} />
+    </>
   );
 }
 function CameraControls({
@@ -592,116 +414,167 @@ function CameraControls({
   zoom = 0,
   reset = 0,
   autoRotate = false,
+  tool,
 }: Props) {
   const controls = useRef<OrbitControlsImpl>(null);
-  const { camera, size } = useThree();
-  const height = config.tiers.reduce((n, t) => n + t.height * 0.27, 0);
+  const { camera, size, invalidate } = useThree();
+  const layouts = tierLayout(config),
+    height = layouts.at(-1)!.top + (config.topper ? 0.75 : 0.28);
+  const radius =
+    Math.max(
+      (config.board!.diameter * UNIT) / 2,
+      ...layouts.map((l) => l.radius + Math.hypot(l.x, l.z)),
+    ) + 0.45;
+  const layoutKey = layouts
+    .map((l) => `${l.radius}:${l.x}:${l.z}:${l.top}`)
+    .join("|");
   useEffect(() => {
-    const target = new THREE.Vector3(0, height * 0.49 + 0.15, 0);
-    const aspect = size.width / Math.max(1, size.height);
-    const distance = Math.max(
-      6.2,
-      height * 2.35,
-      config.tiers[0].diameter * 0.78,
-      (config.tiers[0].diameter * 0.135 + 0.34) /
-        (Math.tan(Math.PI / 10) * aspect),
-    );
-    const v =
+    const target = new THREE.Vector3(0, height * 0.48, 0),
+      aspect = size.width / Math.max(1, size.height),
+      fov = (32 * Math.PI) / 180;
+    const distance =
+      Math.max(
+        (height * 0.66) / Math.tan(fov / 2),
+        radius / (Math.tan(fov / 2) * aspect),
+      ) * 1.3;
+    const dir =
       view === "Front"
-        ? [0, height * 0.5 + 0.18, distance]
+        ? new THREE.Vector3(0, 0.03, 1)
         : view === "Side"
-          ? [distance, height * 0.5 + 0.18, 0]
+          ? new THREE.Vector3(1, 0.03, 0)
           : view === "Top"
-            ? [0, distance + height, 0.01]
-            : [
-                distance * 0.72,
-                height * 0.55 + distance * 0.42,
-                distance * 0.87,
-              ];
-    camera.position.set(...(v as [number, number, number]));
-    camera.zoom = Math.max(0.5, Math.min(2.5, 1 + zoom * 0.13));
+            ? new THREE.Vector3(0, 1, 0.001)
+            : new THREE.Vector3(0.4, 0.29, 1).normalize();
+    camera.position
+      .copy(target)
+      .addScaledVector(dir, distance * (view === "Close-up" ? 0.7 : 1));
+    camera.zoom = Math.max(0.6, 1 + zoom * 0.13);
     camera.updateProjectionMatrix();
     controls.current?.target.copy(target);
     controls.current?.update();
+    invalidate();
   }, [
     view,
-    reset,
     zoom,
-    config.tiers.length,
-    config.tiers[0].diameter,
+    reset,
+    layoutKey,
     height,
+    radius,
     camera,
     size.width,
     size.height,
+    invalidate,
   ]);
   return (
     <OrbitControls
       ref={controls}
       makeDefault
+      enabled={tool !== "move"}
+      enablePan
       enableDamping
       dampingFactor={0.08}
-      minDistance={2.5}
-      maxDistance={30}
+      minDistance={Math.max(radius * 1.4, height * 0.65)}
+      maxDistance={40}
       maxPolarAngle={Math.PI * 0.49}
-      target={[0, height * 0.49 + 0.15, 0]}
       autoRotate={autoRotate}
-      autoRotateSpeed={0.65}
-      enablePan={false}
+      autoRotateSpeed={0.5}
     />
   );
 }
-export default function Cake3D(props: Props) {
+class RenderBoundary extends Component<
+  { children: ReactNode; fallback: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
+}
+function StudioLighting({ config }: { config: CakeConfig }) {
+  const { gl } = useThree();
+  useEffect(() => {
+    gl.toneMapping = THREE.ACESFilmicToneMapping;
+    gl.toneMappingExposure = config.background!.exposure * 0.88;
+  }, [gl, config.background!.exposure]);
+  const height = tierLayout(config).at(-1)!.top;
   return (
-    <div className="cake-3d">
-      <Canvas
-        frameloop={props.autoRotate ? "always" : "demand"}
-        shadows={{ type: THREE.PCFShadowMap }}
-        dpr={[1, 1.5]}
-        camera={{ position: [5, 4, 6], fov: 36, near: 0.1, far: 150 }}
-        gl={{ antialias: true, preserveDrawingBuffer: true }}
-        fallback={
-          <div className="webgl-fallback">
-            3D needs WebGL support. Your editable 2D design is available in the
-            Design tab.
-          </div>
-        }
+    <>
+      <color attach="background" args={[config.background!.color]} />
+      <hemisphereLight args={["#fff4e5", "#9b8a80", 0.12]} />
+      <directionalLight
+        position={[-3.5, 5, 3]}
+        intensity={2.0}
+        color="#fff5e8"
+        castShadow
+        shadow-mapSize={[1024, 1024]}
+        shadow-camera-left={-5}
+        shadow-camera-right={5}
+        shadow-camera-top={height + 3}
+        shadow-camera-bottom={-4}
+        shadow-camera-near={0.5}
+        shadow-camera-far={30}
+        shadow-normalBias={0.0015}
+        shadow-bias={-0.0001}
+        shadow-radius={14}
+        shadow-blurSamples={8}
+        shadow-intensity={0.7}
+      />
+      <directionalLight
+        position={[4, 4, -3]}
+        intensity={0.35}
+        color="#f5f7ff"
+      />
+      <Suspense fallback={null}>
+        <Environment
+          files="/assets/materials/studio-small-09.hdr"
+          environmentIntensity={0.65}
+          environmentRotation={[0, 2.2, 0]}
+        />
+      </Suspense>
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, -0.008, 0]}
+        userData={{ studioFloor: true }}
+        receiveShadow
       >
-        <color attach="background" args={["#eeedf0"]} />
-        <ambientLight intensity={0.8} />
-        <hemisphereLight args={["#fff7f1", "#d7d1dc", 0.7]} />
-        <directionalLight
-          position={[-3, 7, 5]}
-          intensity={2.5}
-          castShadow
-          shadow-mapSize={[1024, 1024]}
-          shadow-camera-left={-5}
-          shadow-camera-right={5}
-          shadow-camera-top={6}
-          shadow-camera-bottom={-3}
-          shadow-bias={-0.001}
+        <planeGeometry args={[200, 200]} />
+        <meshStandardMaterial
+          color={config.background!.color}
+          roughness={0.94}
         />
-        <directionalLight
-          position={[4, 4, -3]}
-          intensity={1.1}
-          color="#f9efff"
-        />
-        <Suspense fallback={null}>
-          <Scene {...props} />
-          <ContactShadows
-            key={JSON.stringify(
-              props.config.tiers.map((t) => [t.diameter, t.height]),
-            )}
-            position={[0, 0.015, 0]}
-            opacity={0.23}
-            scale={13}
-            blur={3.6}
-            far={5}
-            resolution={256}
-            frames={1}
-          />
-        </Suspense>
-        <CameraControls {...props} />
-      </Canvas>
+      </mesh>
+      <ContactShadow revision={JSON.stringify(config)} height={height} />
+    </>
+  );
+}
+export default function Cake3D(props: Props) {
+  const config = useMemo(() => normalizeCake(props.config), [props.config]);
+  const fallback = (
+    <div className="webgl-fallback">
+      <p>3D preview is unavailable. You can continue editing in 2D Design.</p>
+      <Cake2D config={config} />
+    </div>
+  );
+  return (
+    <div className="cake-3d" aria-label="Interactive 3D cake preview">
+      <RenderBoundary fallback={fallback}>
+        <Canvas
+          frameloop={props.autoRotate ? "always" : "demand"}
+          shadows={{ type: THREE.VSMShadowMap }}
+          dpr={[1, 2]}
+          camera={{ position: [4, 3, 8], fov: 32, near: 0.05, far: 100 }}
+          gl={{ antialias: true, preserveDrawingBuffer: true, alpha: false }}
+          fallback={fallback}
+        >
+          <StudioLighting config={config} />
+          <CakeScene {...props} config={config} />
+          <CameraControls {...props} config={config} />
+          <StudioPostprocessing />
+        </Canvas>
+      </RenderBoundary>
     </div>
   );
 }

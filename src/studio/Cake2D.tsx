@@ -1,8 +1,15 @@
-import { useId } from "react";
+import { useId, useMemo } from "react";
 import type { CakeConfig } from "../domain/models";
-
+import {
+  normalizeCake,
+  tierLayout,
+  attachmentPosition,
+  assetById,
+  UNIT,
+  perimeterRadius,
+} from "../domain/cakeScene";
 export function Cake2D({
-  config,
+  config: input,
   selected,
   onSelect,
 }: {
@@ -10,403 +17,312 @@ export function Cake2D({
   selected?: string;
   onSelect?: (id: string) => void;
 }) {
-  const id = useId().replaceAll(":", "");
-  const maxD = Math.max(...config.tiers.map((t) => t.diameter));
-  const totalHeight = config.tiers.reduce((n, t) => n + t.height, 0);
-  const scale = Math.min(31, 260 / totalHeight);
-  const base = 345;
-  const rx = maxD * 15 + 25;
-  let y = base;
-  const tiers = config.tiers.map((t) => {
-    const h = t.height * scale;
-    const item = { ...t, bottom: y, top: y - h, h, w: t.diameter * 15 };
-    y -= h;
-    return item;
+  const config = useMemo(() => normalizeCake(input), [input]);
+  const id = useId().replaceAll(":", ""),
+    layouts = tierLayout(config);
+  const height = layouts.at(-1)!.top + (config.topper ? 0.7 : 0.3),
+    radius =
+      Math.max(
+        (config.board!.diameter * UNIT) / 2,
+        ...layouts.map((l) => l.radius + Math.abs(l.x)),
+      ) + 0.4;
+  const scale = Math.min(350 / (2 * radius), 305 / height),
+    base = 365;
+  const point = ([x, y, z]: number[]) => [
+    220 + x * scale,
+    base - y * scale + z * scale * 0.22,
+  ];
+  const select = (key: string) => ({
+    role: onSelect ? ("button" as const) : undefined,
+    tabIndex: onSelect ? 0 : undefined,
+    onClick: () => onSelect?.(key),
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onSelect?.(key);
+      }
+    },
+    style: { cursor: onSelect ? "pointer" : undefined },
   });
-  const top = tiers[tiers.length - 1];
   return (
     <svg
       viewBox="0 0 440 440"
       role="img"
-      aria-label={`${config.tiers.length}-tier ${config.shape.toLowerCase()} ${config.flavor.toLowerCase()} cake with ${Array.from(new Set(config.tiers.flatMap((t) => t.decorations))).join(", ")}`}
+      aria-label={`${config.tiers.length}-tier ${config.shape.toLowerCase()} ${config.flavor.toLowerCase()} cake with ${(
+        config.objects || []
+      )
+        .map((o) => o.name)
+        .filter((n, i, a) => a.indexOf(n) === i)
+        .join(", ")}`}
       className="cake-2d"
     >
       <defs>
-        <filter id={`shadow-${id}`}>
-          <feGaussianBlur stdDeviation="10" />
-        </filter>
-        {tiers.map((t, i) => (
-          <linearGradient key={t.id} id={`tier-${id}-${i}`} x1="0" x2="1">
-            <stop offset="0" stopColor={t.color} />
-            <stop offset="0.38" stopColor={t.color} />
-            <stop offset="1" stopColor="#53404b" stopOpacity="0.16" />
-          </linearGradient>
-        ))}
-        <linearGradient id={`gold-${id}`}>
-          <stop stopColor="#dfc886" />
-          <stop offset="0.5" stopColor="#a78238" />
-          <stop offset="1" stopColor="#dbc58b" />
+        <linearGradient id={`shade-${id}`}>
+          <stop stopColor="#fff" stopOpacity=".22" />
+          <stop offset=".5" stopColor="#fff" stopOpacity="0" />
+          <stop offset="1" stopColor="#4d302a" stopOpacity=".17" />
         </linearGradient>
       </defs>
       <ellipse
         cx="220"
-        cy={base + 29}
-        rx={rx - 15}
-        ry="17"
-        fill="#635565"
-        opacity="0.15"
-        filter={`url(#shadow-${id})`}
-      />
-      <ellipse cx="220" cy={base + 10} rx={rx} ry="31" fill="#d6d0c8" />
-      <ellipse
-        cx="220"
         cy={base + 5}
-        rx={rx}
-        ry="31"
-        fill={config.boardColor}
-        stroke="#e2ddd5"
+        rx={((config.board!.diameter * UNIT) / 2) * scale}
+        ry={((config.board!.diameter * UNIT) / 2) * scale * 0.22}
+        fill="#b8ada4"
+        opacity=".2"
       />
-      {tiers.map((t, i) => {
-        const ellipse = config.shape === "Square" ? 7 : 25;
-        return (
-          <g
-            key={t.id}
-            role={onSelect ? "button" : undefined}
-            tabIndex={onSelect ? 0 : undefined}
-            aria-label={
-              onSelect
-                ? `Select ${i === 0 ? "bottom" : i === tiers.length - 1 ? "top" : i + 1} tier`
-                : undefined
-            }
-            onClick={() => onSelect?.(t.id)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") onSelect?.(t.id);
-            }}
-            style={{ cursor: onSelect ? "pointer" : undefined }}
-          >
-            <path
-              d={`M${220 - t.w} ${t.top} L${220 - t.w} ${t.bottom} A${t.w} ${ellipse} 0 0 0 ${220 + t.w} ${t.bottom} L${220 + t.w} ${t.top} Z`}
-              fill={t.color}
-            />
-            <path
-              d={`M${220 - t.w} ${t.top} L${220 - t.w} ${t.bottom} A${t.w} ${ellipse} 0 0 0 ${220 + t.w} ${t.bottom} L${220 + t.w} ${t.top} Z`}
-              fill={`url(#tier-${id}-${i})`}
-            />
-            {["Textured", "Ruffled", "Vintage"].includes(t.finish) &&
-              Array.from({ length: Math.floor(t.h / 9) }, (_, n) => (
-                <path
-                  key={n}
-                  d={`M${220 - t.w + 2} ${t.top + 9 + n * 9} Q220 ${t.top + 9 + n * 9 + ellipse * 1.6} ${220 + t.w - 2} ${t.top + 9 + n * 9}`}
-                  fill="none"
-                  stroke="#fff"
-                  strokeOpacity="0.23"
-                  strokeWidth={t.finish === "Ruffled" ? 4 : 1.5}
-                />
-              ))}
-            <ellipse
-              cx="220"
-              cy={t.top}
-              rx={t.w}
-              ry={ellipse}
-              fill={t.color}
-              stroke="#fff"
-              strokeOpacity="0.48"
-            />
-            {config.shape === "Heart" && (
+      <g {...select("board")} aria-label="Select cake board">
+        <ellipse
+          cx="220"
+          cy={base}
+          rx={((config.board!.diameter * UNIT) / 2) * scale}
+          ry={((config.board!.diameter * UNIT) / 2) * scale * 0.22}
+          fill={config.boardColor}
+          stroke="#d8cec1"
+        />
+      </g>
+      {layouts
+        .filter((l) => !l.tier.hidden)
+        .map((l, i) => {
+          const [x, bottom] = point([l.x, l.bottom, l.z]),
+            top = bottom - l.height * scale,
+            r = l.radius * scale,
+            ellipse =
+              (l.tier.shape ?? config.shape) === "Square" ? r * 0.08 : r * 0.22;
+          const shape = l.tier.shape ?? config.shape;
+          const contour = Array.from({ length: 96 }, (_, j) => {
+            const angle = (j / 96) * Math.PI * 2,
+              rad = perimeterRadius(shape, l.radius, angle);
+            return point([
+              l.x + Math.cos(angle) * rad,
+              l.top,
+              l.z + Math.sin(angle) * rad,
+            ]);
+          });
+          const topPath =
+            contour
+              .map((p, j) => `${j === 0 ? "M" : "L"}${p[0]} ${p[1]}`)
+              .join(" ") + "Z";
+          return (
+            <g
+              key={l.tier.id}
+              {...select(l.tier.id)}
+              aria-label={`Select ${i === 0 ? "bottom" : i === layouts.length - 1 ? "top" : i + 1} tier`}
+            >
               <path
-                d={`M220 ${t.top + 19} C${220 - t.w - 30} ${t.top - 8} ${220 - t.w / 2} ${t.top - 43} 220 ${t.top - 12} C${220 + t.w / 2} ${t.top - 43} ${220 + t.w + 30} ${t.top - 8} 220 ${t.top + 19}`}
-                fill={t.color}
+                d={`M${x - r} ${top}V${bottom}A${r} ${ellipse} 0 0 0 ${x + r} ${bottom}V${top}Z`}
+                fill={l.tier.color}
+              />
+              <path
+                d={`M${x - r} ${top}V${bottom}A${r} ${ellipse} 0 0 0 ${x + r} ${bottom}V${top}Z`}
+                fill={`url(#shade-${id})`}
+              />
+              <path
+                d={topPath}
+                fill={l.tier.color}
                 stroke="#fff"
-                strokeOpacity="0.4"
+                strokeOpacity=".5"
               />
-            )}
-            {config.shape === "Number" && (
-              <text
-                x="220"
-                y={t.top + t.h * 0.78}
-                textAnchor="middle"
-                fontSize={t.h * 0.82}
-                fill="#fff"
-                opacity="0.6"
-                fontFamily="Georgia"
-              >
-                {config.number || "10"}
-              </text>
-            )}
-            {config.shape === "Custom" &&
-              Array.from({ length: 12 }, (_, n) => (
-                <circle
-                  key={n}
-                  cx={220 + Math.cos((n / 12) * Math.PI * 2) * t.w * 0.92}
-                  cy={t.top + Math.sin((n / 12) * Math.PI * 2) * ellipse}
-                  r="7"
-                  fill={t.color}
-                />
-              ))}
-            {t.finish === "Drip" &&
-              Array.from({ length: 11 }, (_, n) => (
-                <path
-                  key={n}
-                  d={`M${220 - t.w + 12 + (n * (t.w * 2 - 24)) / 10} ${t.top + ellipse * Math.sin((n / 10) * Math.PI)}v${12 + ((n * 13) % 27)}`}
-                  stroke={config.flavor === "Chocolate" ? "#3c2721" : "#aa746b"}
-                  strokeWidth="8"
-                  strokeLinecap="round"
-                />
-              ))}
-            {["Vintage", "Ruffled"].includes(t.finish) &&
-              Array.from({ length: 23 }, (_, n) => (
-                <g key={n}>
-                  <circle
-                    cx={220 - t.w + 5 + (n * (t.w * 2 - 10)) / 22}
-                    cy={t.bottom + ellipse * Math.sin((n / 22) * Math.PI)}
-                    r={t.finish === "Vintage" ? 5.3 : 3.7}
-                    fill={t.color}
-                    stroke="#fff"
-                    strokeOpacity="0.42"
-                  />
-                  <circle
-                    cx={220 - t.w + 5 + (n * (t.w * 2 - 10)) / 22}
-                    cy={t.top + ellipse * Math.sin((n / 22) * Math.PI)}
-                    r="4"
-                    fill={t.color}
-                    stroke="#fff"
-                    strokeOpacity="0.5"
-                  />
-                </g>
-              ))}
-            {t.decorations.includes("Pearls") &&
-              Array.from({ length: 19 }, (_, n) => (
-                <circle
-                  key={n}
-                  cx={220 - t.w + 8 + (n * (t.w * 2 - 16)) / 18}
-                  cy={t.bottom + ellipse * Math.sin((n / 18) * Math.PI) - 3}
-                  r="3"
-                  fill={`url(#gold-${id})`}
-                />
-              ))}
-            {t.decorations.includes("Gold accents") &&
-              Array.from({ length: 16 }, (_, n) => (
-                <path
-                  key={n}
-                  d="M-2 -3L3 -1L1 3L-2 1Z"
-                  fill={`url(#gold-${id})`}
-                  transform={`translate(${220 - t.w + 13 + ((n * 47) % (t.w * 2 - 26))},${t.top + 10 + ((n * 31) % Math.max(20, t.h - 14))}) rotate(${n * 41})`}
-                />
-              ))}
-            {t.decorations.includes("Sprinkles") &&
-              Array.from({ length: 45 }, (_, n) => (
-                <rect
-                  key={n}
-                  x={220 - t.w + 10 + ((n * 41) % (t.w * 2 - 20))}
-                  y={t.top + 15 + ((n * 19) % Math.max(20, t.h - 15))}
-                  width="2"
-                  height="5"
-                  rx="1"
-                  fill={
-                    ["#cd829b", "#96b1ca", "#dec374", "#a8bc8b", "#b197c4"][
-                      n % 5
-                    ]
-                  }
-                  transform={`rotate(${n * 31} ${220 - t.w + 10 + ((n * 41) % (t.w * 2 - 20))} ${t.top + 15 + ((n * 19) % Math.max(20, t.h - 15))})`}
-                />
-              ))}
-            {(t.decorations.includes("Roses") ||
-              t.decorations.includes("Flowers")) &&
-              [
-                [-t.w * 0.72, 5, 16],
-                [t.w * 0.72, -3, 13],
-                [t.w * 0.53, 10, 9],
-              ].map(([x, dy, r], n) => (
-                <g key={n} transform={`translate(${220 + x},${t.top + dy})`}>
-                  <ellipse
-                    cx={-r}
-                    cy="7"
-                    rx="12"
-                    ry="4"
-                    fill="#92a389"
-                    transform="rotate(-26)"
-                  />
-                  <ellipse
-                    cx={r}
-                    cy="10"
-                    rx="10"
-                    ry="4"
-                    fill="#a6b198"
-                    transform="rotate(25)"
-                  />
-                  {Array.from({ length: 7 }, (_, p) => (
-                    <ellipse
-                      key={p}
-                      cx={Math.cos((p / 7) * Math.PI * 2) * r * 0.48}
-                      cy={Math.sin((p / 7) * Math.PI * 2) * r * 0.48}
-                      rx={r * 0.72}
-                      ry={r * 0.55}
-                      transform={`rotate(${(p / 7) * 360} ${Math.cos((p / 7) * Math.PI * 2) * r * 0.48} ${Math.sin((p / 7) * Math.PI * 2) * r * 0.48})`}
-                      fill={
-                        t.decorations.includes("Roses")
-                          ? ["#e9b3bf", "#f3cad0", "#f7dbdd"][p % 3]
-                          : "#fff9ec"
-                      }
-                      stroke={
-                        t.decorations.includes("Roses") ? "#d8a0af" : "#e9dfc9"
-                      }
-                      strokeWidth="0.6"
-                    />
-                  ))}
-                  <circle
-                    r={r * 0.4}
-                    fill={
-                      t.decorations.includes("Roses") ? "#d29aa9" : "#d6ba69"
-                    }
-                  />
-                  {t.decorations.includes("Roses") && (
+              {shape === "Number" && (
+                <text
+                  x={x}
+                  y={top + (bottom - top) * 0.7}
+                  textAnchor="middle"
+                  fontFamily="sans-serif"
+                  fontWeight="bold"
+                  fontSize={(bottom - top) * 0.6}
+                  fill="#fff"
+                  opacity={0.5}
+                >
+                  {config.number || "10"}
+                </text>
+              )}
+              {["Textured", "Ruffled", "Rough", "Vintage", "Piped"].includes(
+                l.tier.finish,
+              ) &&
+                Array.from(
+                  { length: Math.floor((l.height * scale) / 7) },
+                  (_, j) => (
                     <path
-                      d={`M-3 3Q-9 -5 0 -6Q8 -4 3 2Q-3 6 -3 0Q0 -3 2 0`}
+                      key={j}
+                      d={`M${x - r} ${top + j * 7 + 5}q${r} ${ellipse * 1.7} ${2 * r} 0`}
                       fill="none"
-                      stroke="#f7dce0"
-                      strokeWidth="1.5"
+                      stroke="#fff"
+                      strokeWidth={l.tier.finish === "Ruffled" ? 3 : 1}
+                      opacity=".25"
                     />
-                  )}
-                </g>
-              ))}
-            {t.decorations.includes("Macarons") &&
-              [-0.5, 0.2, 0.6].map((x, n) => (
-                <g
-                  key={n}
-                  transform={`translate(${220 + t.w * x},${t.top - 6}) rotate(${n * 18 - 15})`}
-                >
-                  <rect
-                    x="-12"
-                    y="-13"
-                    width="24"
-                    height="23"
-                    rx="11"
-                    fill={["#d0b1c2", "#c5ceab", "#e4b4a6"][n]}
-                  />
-                  <path d="M-11 -1H11" stroke="#fff5e5" strokeWidth="3" />
-                </g>
-              ))}
-            {t.decorations.includes("Fruit") &&
-              [-0.6, -0.2, 0.2, 0.6].map((x, n) => (
-                <g
-                  key={n}
-                  transform={`translate(${220 + t.w * x},${t.top - 4})`}
-                >
+                  ),
+                )}
+              {l.tier.finish === "Drip" &&
+                Array.from({ length: 12 }, (_, j) => (
                   <path
-                    d="M-10 0Q-12 -17 0 -17Q12 -17 10 0L0 10Z"
-                    fill="#bd4f50"
+                    key={j}
+                    d={`M${x - r + 5 + (j * (r * 2 - 10)) / 11} ${top + ellipse * Math.sin((j / 11) * Math.PI)}v${7 + ((j * 11) % 18)}`}
+                    stroke="#fff0d4"
+                    strokeWidth="5"
+                    strokeLinecap="round"
                   />
-                  <path d="M-8 -14L0 -22L7 -14L0 -16Z" fill="#819a6b" />
-                  <circle cx="-3" cy="-5" r="1" fill="#f6d396" />
-                  <circle cx="4" cy="0" r="1" fill="#f6d396" />
-                </g>
-              ))}
-            {t.decorations.includes("Chocolate") &&
-              [-0.6, -0.1, 0.4].map((x, n) => (
-                <rect
-                  key={n}
-                  x={220 + t.w * x}
-                  y={t.top - 26}
-                  width="14"
-                  height="31"
-                  rx="2"
-                  fill="#503228"
-                  transform={`rotate(${n * 25 - 18} ${220 + t.w * x} ${t.top})`}
-                />
-              ))}
-            {t.decorations.includes("Ribbons") && (
-              <>
+                ))}
+              {selected === l.tier.id && (
                 <path
-                  d={`M${220 - t.w} ${t.bottom - 12}Q220 ${t.bottom + ellipse * 1.4 - 12} ${220 + t.w} ${t.bottom - 12}`}
+                  d={`M${x - r - 3} ${top}V${bottom}q${r + 3} ${ellipse * 2} ${r * 2 + 6} 0V${top}`}
                   fill="none"
-                  stroke="#bf8a9e"
-                  strokeWidth="8"
+                  stroke="#8c709a"
+                  strokeDasharray="4 3"
                 />
-                <path
-                  d={`M220 ${t.bottom}q-32 -22 -30 -4q3 12 30 4q30 -20 28 -4q-3 10 -28 4`}
-                  fill="#d8a7b5"
-                  stroke="#bb8899"
-                />
-              </>
-            )}
-            {t.decorations.includes("Characters") && (
-              <g transform={`translate(220 ${t.top - 12})`}>
-                <circle cx="-10" cy="-13" r="7" fill="#e1c7a7" />
-                <circle cx="10" cy="-13" r="7" fill="#e1c7a7" />
-                <circle cy="-3" r="16" fill="#e8d5bd" />
-                <circle cx="-5" cy="-5" r="1.5" fill="#5a4541" />
-                <circle cx="5" cy="-5" r="1.5" fill="#5a4541" />
-                <ellipse cy="2" rx="5" ry="4" fill="#f8ead8" />
-                <circle cy="0" r="2" fill="#755b4c" />
+              )}
+            </g>
+          );
+        })}
+      {(config.objects || [])
+        .filter(
+          (o) =>
+            !o.hidden &&
+            !layouts.find((l) => l.tier.id === o.attachment.tierId)?.tier
+              .hidden,
+        )
+        .map((o) => {
+          const l = layouts.find((l) => l.tier.id === o.attachment.tierId)!;
+          if (
+            o.attachment.surface === "side" &&
+            Math.sin(o.attachment.angle) < -0.1
+          )
+            return null;
+          const [x, y] = point(
+              attachmentPosition(o.attachment, l, config.shape),
+            ),
+            kind = assetById(o.assetId)?.kind,
+            s = o.scale * scale;
+          return (
+            <g
+              key={o.id}
+              {...select(o.id)}
+              aria-label={`Select ${o.name}`}
+              transform={`translate(${x},${y}) rotate(${(o.rotation[2] * 180) / Math.PI})`}
+            >
+              <g fill={o.color} stroke="#845d64" strokeWidth=".4">
+                {kind === "rose" ? (
+                  <>
+                    {Array.from({ length: 16 }, (_, i) => {
+                      const ring = i < 8 ? 1 : 0.55,
+                        a = i * 2.399;
+                      return (
+                        <ellipse
+                          key={i}
+                          cx={Math.cos(a) * s * 0.13 * ring}
+                          cy={Math.sin(a) * s * 0.12 * ring - s * 0.07}
+                          rx={s * 0.16 * ring}
+                          ry={s * 0.12 * ring}
+                          transform={`rotate(${i * 137.5})`}
+                        />
+                      );
+                    })}
+                    <circle r={s * 0.04} />
+                  </>
+                ) : kind === "pearl" ? (
+                  <circle r={s * 0.031} stroke="none" />
+                ) : kind === "sprinkle" ? (
+                  <rect x="-1" y="-3" width="2" height="6" rx="1" />
+                ) : kind === "foil" ? (
+                  <path d="M-2 -3L3 -1L1 4L-3 1Z" />
+                ) : kind === "leaf" ? (
+                  <ellipse rx={s * 0.08} ry={s * 0.2} />
+                ) : kind === "macaron" ? (
+                  <>
+                    <ellipse cy={-s * 0.08} rx={s * 0.18} ry={s * 0.13} />
+                    <path
+                      d={`M${-s * 0.16} ${-s * 0.07}h${s * 0.32}`}
+                      stroke="#fff7e7"
+                      strokeWidth="2"
+                    />
+                  </>
+                ) : kind === "chocolate" ? (
+                  <rect
+                    x={-s * 0.1}
+                    y={-s * 0.38}
+                    width={s * 0.2}
+                    height={s * 0.38}
+                  />
+                ) : (
+                  <ellipse cy={-s * 0.12} rx={s * 0.12} ry={s * 0.17} />
+                )}
               </g>
-            )}
-            {t.decorations.includes("Leaves") &&
-              Array.from({ length: 6 }, (_, n) => (
-                <ellipse
-                  key={n}
-                  cx={220 - t.w + 15 + n * 14}
-                  cy={t.top + 4}
-                  rx="11"
-                  ry="4"
-                  fill={n % 2 ? "#899f7c" : "#a4b096"}
-                  transform={`rotate(${n % 2 ? 30 : -30} ${220 - t.w + 15 + n * 14} ${t.top + 4})`}
+              {selected === o.id && (
+                <circle
+                  r={Math.max(7, s * 0.35)}
+                  fill="none"
+                  stroke="#8c709a"
+                  strokeDasharray="3 2"
                 />
-              ))}
-            {selected === t.id && (
-              <path
-                d={`M${220 - t.w - 4} ${t.top}L${220 - t.w - 4} ${t.bottom}Q220 ${t.bottom + ellipse * 2 + 6} ${220 + t.w + 4} ${t.bottom}V${t.top}`}
-                fill="none"
-                stroke="#8c709a"
-                strokeWidth="1.8"
-                strokeDasharray="5 4"
-              />
-            )}
-          </g>
-        );
-      })}
-      {config.topper && (
-        <g onClick={() => onSelect?.("topper")}>
-          <path
-            d={`M207 ${top.top - 10}V${top.top - 52}M233 ${top.top - 10}V${top.top - 52}`}
-            stroke="#b89958"
-            strokeWidth="2"
-          />
-          <text
-            x="220"
-            y={top.top - 56}
-            textAnchor="middle"
-            fontFamily="Georgia,serif"
-            fontStyle="italic"
-            fontSize="17"
-            fill={`url(#gold-${id})`}
-          >
-            {config.topper}
-          </text>
-        </g>
-      )}
-      {config.text && (
-        <text
-          x="220"
-          y={tiers[0].top + tiers[0].h * 0.65}
-          textAnchor="middle"
-          fontSize={Math.min(
-            config.textSize,
-            config.text.length > 25 ? 14 : 19,
-          )}
-          fill={config.textColor}
-          fontFamily={
-            config.textStyle === "Modern"
-              ? "sans-serif"
-              : config.textStyle === "Playful"
-                ? "cursive"
-                : "Georgia,serif"
-          }
-          fontStyle={config.textStyle === "Elegant" ? "italic" : undefined}
-          onClick={() => onSelect?.("text")}
-        >
-          {config.text}
-        </text>
-      )}
+              )}
+            </g>
+          );
+        })}
+      {config.topper &&
+        !config.lettering!.topper.hidden &&
+        (() => {
+          const s = config.lettering!.topper,
+            p = s.position,
+            [x, y] = point([
+              layouts.at(-1)!.x + p[0] * UNIT,
+              layouts.at(-1)!.top + 0.27 + p[1] * UNIT,
+              p[2] * UNIT,
+            ]);
+          return (
+            <g
+              {...select("topper")}
+              aria-label="Select topper"
+              transform={`translate(${x},${y}) rotate(${(s.rotation[2] * -180) / Math.PI}) scale(${s.scale})`}
+            >
+              <path d="M-12 5V25M12 5V25" stroke={s.color} />
+              <text
+                textAnchor="middle"
+                fill={s.color}
+                fontFamily={
+                  s.font === "great-vibes"
+                    ? "Great Vibes"
+                    : s.font === "optimer"
+                      ? "Georgia"
+                      : "sans-serif"
+                }
+                fontSize={s.size * UNIT * scale}
+              >
+                {config.topper}
+              </text>
+            </g>
+          );
+        })()}
+      {config.text &&
+        !config.lettering!.text.hidden &&
+        (() => {
+          const s = config.lettering!.text,
+            p = s.position,
+            l = layouts[0],
+            [x, y] = point([
+              l.x + p[0] * UNIT,
+              l.bottom + l.height * 0.53 + p[1] * UNIT,
+              l.radius + p[2] * UNIT,
+            ]);
+          return (
+            <text
+              {...select("text")}
+              aria-label="Select lettering"
+              transform={`translate(${x},${y}) rotate(${(s.rotation[2] * -180) / Math.PI}) scale(${s.scale})`}
+              textAnchor="middle"
+              fill={config.textColor}
+              fontFamily={
+                s.font === "great-vibes"
+                  ? "Great Vibes"
+                  : s.font === "optimer"
+                    ? "Georgia"
+                    : "sans-serif"
+              }
+              fontSize={((s.size * config.textSize) / 24) * UNIT * scale}
+            >
+              {config.text}
+            </text>
+          );
+        })()}
     </svg>
   );
 }

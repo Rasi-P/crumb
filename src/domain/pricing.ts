@@ -89,13 +89,24 @@ export function calculatePrice(
         Minimal: 0,
         Ruffled: 150,
         Drip: 120,
+        Rough: 75,
+        "Semi-naked": 40,
+        Naked: 0,
+        Piped: 180,
       }[t.finish],
     0,
   );
-  const decor = config.tiers.reduce(
-    (n, t) => n + t.decorations.reduce((a, d) => a + decorationCosts[d], 0),
-    0,
-  );
+  const decor =
+    config.sceneVersion === 2
+      ? (config.objects || []).reduce(
+          (sum, object) => sum + object.unitPrice,
+          0,
+        )
+      : config.tiers.reduce(
+          (n, t) =>
+            n + t.decorations.reduce((a, d) => a + decorationCosts[d], 0),
+          0,
+        );
   const topper = config.topper ? 160 : 0;
   const text = config.text ? 60 : 0;
   const lines = [
@@ -104,7 +115,7 @@ export function calculatePrice(
     { label: "Frosting & filling", amount: frosting },
     { label: "Tier supports", amount: structure },
     { label: "Finishing", amount: finish },
-    { label: "Decorations", amount: decor },
+    { label: "Decorations", amount: Math.round(decor * 100) / 100 },
     { label: "Custom topper", amount: topper },
     { label: "Lettering", amount: text },
     { label: "Board & packaging", amount: 100 },

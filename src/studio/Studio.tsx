@@ -56,10 +56,13 @@ import {
 import { useData, useStore } from "../lib/store";
 import {
   categories,
+  materialNames,
   decorations,
   flavors,
   uid,
   type CakeConfig,
+  type CakeObject,
+  type Attachment,
   type Design,
   type Tier,
 } from "../domain/models";
@@ -77,6 +80,22 @@ import {
   Skeleton,
   Tabs,
 } from "../components/ui";
+import {
+  normalizeCake,
+  makeObject,
+  serializeCake,
+  deserializeCake,
+} from "../domain/cakeScene";
+import {
+  AssetLibrary,
+  LayerTree,
+  SceneActions,
+  ObjectInspector,
+  TierDetails,
+  LetteringDetails,
+  Numeric,
+} from "./ScenePanels";
+import { ImageCakeDialog } from "./ImageCakeDialog";
 import { Cake2D } from "./Cake2D";
 import { QuoteForm } from "../pages/Quotations";
 const Cake3D = lazy(() => import("./Cake3D"));
@@ -116,7 +135,7 @@ export default function Studio() {
   const [imageIndex, setImageIndex] = useState(source.image);
   const [history, setHistory] = useState<HistoryState>({
     past: [],
-    present: structuredClone(source.config),
+    present: normalizeCake(source.config),
     future: [],
   });
   const config = history.present;
@@ -127,8 +146,11 @@ export default function Studio() {
     config.tiers[config.tiers.length - 1].id,
   );
   const [search, setSearch] = useState("");
-  const [view, setView] = useState("Perspective");
-  const [zoom, setZoom] = useState(0);
+  const view = config.camera?.view || "Perspective";
+  const [tool, setTool] = useState("select");
+  const [fileError, setFileError] = useState("");
+  const importInput = useRef<HTMLInputElement>(null);
+  const zoom = config.camera?.zoom || 0;
   const [reset, setReset] = useState(0);
   const [autoRotate, setAutoRotate] = useState(false);
   const [modal, setModal] = useState("");
@@ -190,9 +212,11 @@ export default function Studio() {
   const savedVersion = useRef(0);
   const mounted = useRef(true);
   const price = calculatePrice(config, d.business.margin, d.inventory);
+  const selectedObject = config.objects?.find((o) => o.id === selected);
   const selectedTier =
-    config.tiers.find((t) => t.id === selected) ||
-    config.tiers[config.tiers.length - 1];
+    config.tiers.find(
+      (t) => t.id === (selectedObject?.attachment.tierId || selected),
+    ) || config.tiers[config.tiers.length - 1];
   const tierIndex = config.tiers.indexOf(selectedTier);
   const dirty = () => {
     setVersion((v) => v + 1);
@@ -205,7 +229,7 @@ export default function Studio() {
           typeof next === "function" ? next(structuredClone(h.present)) : next;
         return {
           past: [...h.past.slice(-49), h.present],
-          present: updated,
+          present: normalizeCake(updated),
           future: [],
         };
       });
@@ -215,12 +239,79 @@ export default function Studio() {
     [],
   );
   const updateTier = (patch: Partial<Tier>) =>
+    !selectedTier.locked &&
     change((c) => ({
       ...c,
       tiers: c.tiers.map((t) =>
         t.id === selectedTier.id ? { ...t, ...patch } : t,
       ),
     }));
+  const setView = (view: NonNullable<CakeConfig["camera"]>["view"]) =>
+    change((c) => ({ ...c, camera: { ...c.camera!, view } }));
+  const setZoom = (update: number | ((n: number) => number)) =>
+    change((c) => ({
+      ...c,
+      camera: {
+        ...c.camera!,
+        zoom: typeof update === "function" ? update(c.camera!.zoom) : update,
+      },
+    }));
+  useEffect(() => {
+    if (!selectedObject) setTool("select");
+  }, [selectedObject?.id]);
+  useEffect(() => {
+    if (
+      !["board", "text", "topper"].includes(selected) &&
+      !config.tiers.some((t) => t.id === selected) &&
+      !config.objects?.some((o) => o.id === selected)
+    )
+      setSelected(config.tiers.at(-1)!.id);
+  }, [config, selected]);
+  const updateObject = (object: CakeObject) =>
+    change((c) => ({
+      ...c,
+      objects: c.objects!.map((o) => (o.id === object.id ? object : o)),
+    }));
+  const addObjects = (objects: CakeObject[]) => {
+    change((c) => ({
+      ...c,
+      objects: [...(c.objects || []), ...objects].slice(0, 1500),
+    }));
+    setSelected(objects[0].id);
+    setPanel("Design");
+  };
+  const placeAsset = (assetId: string, attachment: Attachment) =>
+    addObjects([{ ...makeObject(assetId, attachment.tierId), attachment }]);
+  const selectObject = (id: string) => {
+    setSelected(id);
+    setPanel("Design");
+  };
+  const exportConfig = () => {
+    const url = URL.createObjectURL(
+      new Blob([serializeCake({ ...config, cakeId: designId })], {
+        type: "application/json",
+      }),
+    );
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${name.replace(/[^a-z0-9]/gi, "-")}.cake.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  const importConfig = async (file?: File) => {
+    if (!file) return;
+    try {
+      if (file.size > 4_000_000) throw new Error("Cake file exceeds 4 MB");
+      const c = deserializeCake(await file.text());
+      change(c);
+      setSelected(c.tiers.at(-1)!.id);
+      setReset((v) => v + 1);
+      setFileError("");
+    } catch (e) {
+      setFileError(e instanceof Error ? e.message : "Unable to read cake file");
+    }
+    if (importInput.current) importInput.current.value = "";
+  };
   const save = useCallback(
     async (manual = false) => {
       const snapshot = latest.current;
@@ -280,7 +371,7 @@ export default function Studio() {
     setImageIndex(design.image);
     setHistory({
       past: [],
-      present: structuredClone(design.config),
+      present: normalizeCake(design.config),
       future: [],
     });
     setSelected(design.config.tiers[design.config.tiers.length - 1].id);
@@ -337,7 +428,20 @@ export default function Studio() {
     setSaved("Unsaved changes");
   }, []);
   const deleteLayer = useCallback(() => {
-    if (selected === "text") change((c) => ({ ...c, text: "" }));
+    if (
+      config.objects?.find((o) => o.id === selected)?.locked ||
+      config.tiers.find((t) => t.id === selected)?.locked ||
+      ((selected === "text" || selected === "topper") &&
+        config.lettering?.[selected].locked)
+    )
+      return;
+    if (config.objects?.some((o) => o.id === selected)) {
+      change((c) => ({
+        ...c,
+        objects: c.objects!.filter((o) => o.id !== selected),
+      }));
+      setSelected(config.tiers.at(-1)!.id);
+    } else if (selected === "text") change((c) => ({ ...c, text: "" }));
     else if (selected === "topper") change((c) => ({ ...c, topper: "" }));
     else if (selected.startsWith("dec:")) {
       const [, tierId, dec] = selected.split(":");
@@ -359,7 +463,7 @@ export default function Studio() {
       }));
       setSelected(config.tiers[0].id);
     }
-  }, [selected, config.tiers, change]);
+  }, [selected, config, change]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       const typing =
@@ -390,6 +494,7 @@ export default function Studio() {
   }, [save, undo, redo, deleteLayer]);
   const setTiers = (count: number) =>
     change((c) => {
+      if (c.tiers.slice(count).some((t) => t.locked)) return c;
       const tiers = c.tiers.slice(0, count);
       while (tiers.length < count) {
         const i = tiers.length;
@@ -417,7 +522,7 @@ export default function Studio() {
     setImageIndex(design.image);
     setHistory({
       past: [],
-      present: { ...structuredClone(design.config), sellingPrice: null },
+      present: normalizeCake({ ...design.config, sellingPrice: null }),
       future: [],
     });
     setSelected(design.config.tiers[design.config.tiers.length - 1].id);
@@ -545,6 +650,22 @@ export default function Studio() {
               <Redo2 size={18} />
             </IconButton>
           </div>
+          <IconButton label="Export cake JSON" onClick={exportConfig}>
+            <Download size={17} />
+          </IconButton>
+          <IconButton
+            label="Import cake JSON"
+            onClick={() => importInput.current?.click()}
+          >
+            <Layers size={17} />
+          </IconButton>
+          <input
+            type="file"
+            accept=".json,application/json"
+            hidden
+            ref={importInput}
+            onChange={(e) => void importConfig(e.target.files?.[0])}
+          />
           <IconButton
             label="Duplicate design"
             onClick={() => void duplicate()}
@@ -569,6 +690,12 @@ export default function Studio() {
           </Button>
         </div>
       </header>
+      {fileError && (
+        <div className="studio-file-error" role="alert">
+          {fileError}
+          <button onClick={() => setFileError("")}>Dismiss</button>
+        </div>
+      )}
       <div className="studio-body">
         <aside
           className={`studio-library ${mobilePanel === "library" ? "mobile-visible" : ""}`}
@@ -602,6 +729,17 @@ export default function Studio() {
                   placeholder="Find a template..."
                 />
               </div>
+              <button
+                className="reference-import"
+                onClick={() => setModal("image")}
+              >
+                <WandSparkles size={19} />
+                <span>
+                  <strong>Create from Cake Image</strong>
+                  <small>Turn a reference into an editable start</small>
+                </span>
+                <Plus size={14} />
+              </button>
               <div className="template-grid">
                 {d.designs
                   .filter(
@@ -668,7 +806,16 @@ export default function Studio() {
                       key={shape}
                       aria-label={shape}
                       className={config.shape === shape ? "selected" : ""}
-                      onClick={() => change((c) => ({ ...c, shape }))}
+                      onClick={() =>
+                        change((c) => ({
+                          ...c,
+                          shape,
+                          tiers: c.tiers.map((t) => ({
+                            ...t,
+                            shape: t.locked ? (t.shape ?? c.shape) : shape,
+                          })),
+                        }))
+                      }
                     >
                       {shape === "Round" ? (
                         <Circle size={21} />
@@ -695,6 +842,7 @@ export default function Studio() {
                       className={
                         config.tiers.length === count ? "selected" : ""
                       }
+                      disabled={config.tiers.slice(count).some((t) => t.locked)}
                       onClick={() => setTiers(count)}
                     >
                       {count}
@@ -703,48 +851,7 @@ export default function Studio() {
                   ))}
                 </div>
               </div>
-              <div className="studio-section">
-                <h3>The little extras</h3>
-                <div className="decorations-picker">
-                  {decorations.map((dec) => (
-                    <button
-                      key={dec}
-                      className={
-                        selectedTier.decorations.includes(dec) ? "selected" : ""
-                      }
-                      onClick={() =>
-                        updateTier({
-                          decorations: selectedTier.decorations.includes(dec)
-                            ? selectedTier.decorations.filter((x) => x !== dec)
-                            : [...selectedTier.decorations, dec],
-                        })
-                      }
-                    >
-                      <span
-                        className={`decor-preview decor-${dec.toLowerCase().replace(" ", "-")}`}
-                      >
-                        {dec === "Roses" || dec === "Flowers" ? (
-                          <Flower2 size={24} />
-                        ) : dec === "Pearls" ? (
-                          <span className="pearl-swatch" />
-                        ) : dec === "Gold accents" ? (
-                          <Sparkles size={23} />
-                        ) : dec === "Ribbons" ? (
-                          <span className="ribbon-swatch" />
-                        ) : dec === "Sprinkles" ? (
-                          <span className="sprinkle-swatch" />
-                        ) : (
-                          <CakeSlice size={22} />
-                        )}
-                      </span>
-                      <span>{dec}</span>
-                      {selectedTier.decorations.includes(dec) && (
-                        <Check size={12} />
-                      )}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <AssetLibrary tierId={selectedTier.id} onAdd={addObjects} />
               <div className="studio-section">
                 <h3>Say it with cake</h3>
                 <Button
@@ -776,87 +883,11 @@ export default function Studio() {
               </div>
             </div>
           ) : (
-            <div className="layers-panel">
-              <div className="studio-library-heading">
-                <h3>All the lovely layers</h3>
-                <p>{config.tiers.length} tiers, countless little details.</p>
-              </div>
-              {config.text && (
-                <button
-                  className={selected === "text" ? "selected" : ""}
-                  onClick={() => {
-                    setSelected("text");
-                    setPanel("Design");
-                  }}
-                >
-                  <Type size={16} />
-                  <span>{config.text}</span>
-                  <Eye size={13} />
-                </button>
-              )}
-              {config.topper && (
-                <button
-                  className={selected === "topper" ? "selected" : ""}
-                  onClick={() => setSelected("topper")}
-                >
-                  <Sparkles size={16} />
-                  <span>{config.topper}</span>
-                  <Eye size={13} />
-                </button>
-              )}
-              {[...config.tiers].reverse().map((tier, i) => (
-                <div key={tier.id}>
-                  <button
-                    className={selected === tier.id ? "selected" : ""}
-                    onClick={() => {
-                      setSelected(tier.id);
-                      setPanel("Design");
-                    }}
-                  >
-                    <Layers size={16} />
-                    <span>
-                      {i === 0
-                        ? "Top tier"
-                        : i === config.tiers.length - 1
-                          ? "Bottom tier"
-                          : `Tier ${config.tiers.length - i}`}
-                    </span>
-                    <span
-                      className="tiny-color"
-                      style={{ background: tier.color }}
-                    />
-                  </button>
-                  {tier.decorations.map((dec) => (
-                    <button
-                      className={`dec-layer ${selected === `dec:${tier.id}:${dec}` ? "selected" : ""}`}
-                      key={dec}
-                      onClick={() => setSelected(`dec:${tier.id}:${dec}`)}
-                    >
-                      <Flower2 size={13} />
-                      <span>{dec}</span>
-                      <Eye size={12} />
-                    </button>
-                  ))}
-                </div>
-              ))}
-              <button
-                onClick={() => setSelected("board")}
-                className={selected === "board" ? "selected" : ""}
-              >
-                <Circle size={16} />
-                <span>Cake board</span>
-              </button>
-              <Button
-                variant="ghost"
-                onClick={deleteLayer}
-                disabled={
-                  selected === "board" ||
-                  (config.tiers.length === 1 && selected === config.tiers[0].id)
-                }
-              >
-                Remove selected layer
-              </Button>
-            </div>
+            <LayerTree
+              config={config}
+              selected={selected}
+              onSelect={selectObject}
+            />
           )}
         </aside>
         <main className="studio-canvas">
@@ -894,6 +925,38 @@ export default function Studio() {
               <Maximize size={17} />
             </IconButton>
           </div>
+          {mode === "3D Preview" && (
+            <div className="scene-toolstrip" aria-label="3D editing tools">
+              {["select", "move", "rotate", "scale"].map((t) => (
+                <button
+                  key={t}
+                  aria-label={`${t[0].toUpperCase() + t.slice(1)} tool`}
+                  aria-pressed={tool === t}
+                  className={tool === t ? "active" : ""}
+                  disabled={t !== "select" && !selectedObject}
+                  onClick={() => setTool(t)}
+                >
+                  {t === "select" ? (
+                    <MousePointer2 size={16} />
+                  ) : t === "move" ? (
+                    <Move3D size={16} />
+                  ) : t === "rotate" ? (
+                    <RotateCw size={16} />
+                  ) : (
+                    <Maximize size={16} />
+                  )}
+                  <span>{t[0].toUpperCase() + t.slice(1)}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {selectedObject && mode === "3D Preview" && (
+            <div className="scene-hint">
+              {tool === "move"
+                ? "Drag across a tier to place on its surface"
+                : `${selectedObject.name} · Attached to tier ${config.tiers.findIndex((t) => t.id === selectedObject.attachment.tierId) + 1}`}
+            </div>
+          )}
           <div className="canvas-renderer">
             {mode === "3D Preview" ? (
               <Suspense
@@ -907,11 +970,14 @@ export default function Studio() {
                 <Cake3D
                   config={config}
                   selected={selected}
-                  onSelect={setSelected}
+                  onSelect={selectObject}
                   view={view}
                   zoom={zoom}
                   reset={reset}
                   autoRotate={autoRotate}
+                  tool={tool}
+                  onObjectChange={updateObject}
+                  onPlace={placeAsset}
                 />
               </Suspense>
             ) : (
@@ -922,7 +988,7 @@ export default function Studio() {
                 <Cake2D
                   config={config}
                   selected={selected}
-                  onSelect={setSelected}
+                  onSelect={selectObject}
                 />
               </div>
             )}
@@ -930,13 +996,13 @@ export default function Studio() {
           <div className="canvas-bottom-controls">
             <div className="camera-views">
               {mode === "3D Preview" &&
-                ["Perspective", "Front", "Side", "Top"].map((v) => (
+                ["Perspective", "Front", "Side", "Top", "Close-up"].map((v) => (
                   <button
                     key={v}
                     aria-label={v}
                     title={`${v} view`}
                     className={view === v ? "active" : ""}
-                    onClick={() => setView(v)}
+                    onClick={() => setView(v as typeof view)}
                   >
                     {v === "Perspective" ? <Box size={15} /> : v}
                   </button>
@@ -1016,7 +1082,9 @@ export default function Studio() {
             <div className="properties-scroll">
               <div className="selected-object">
                 <span className="selected-icon">
-                  {selected === "text" ? (
+                  {selectedObject ? (
+                    <Flower2 size={17} />
+                  ) : selected === "text" ? (
                     <Type size={17} />
                   ) : selected === "topper" ? (
                     <Sparkles size={17} />
@@ -1027,13 +1095,15 @@ export default function Studio() {
                 <span>
                   <small>SELECTED</small>
                   <strong>
-                    {selected === "text"
-                      ? "Cake lettering"
-                      : selected === "topper"
-                        ? "Custom topper"
-                        : selected === "board"
-                          ? "Cake board"
-                          : `${tierIndex === 0 ? "Bottom" : tierIndex === config.tiers.length - 1 ? "Top" : `Middle`} tier`}
+                    {selectedObject
+                      ? selectedObject.name
+                      : selected === "text"
+                        ? "Cake lettering"
+                        : selected === "topper"
+                          ? "Custom topper"
+                          : selected === "board"
+                            ? "Cake board"
+                            : `${tierIndex === 0 ? "Bottom" : tierIndex === config.tiers.length - 1 ? "Top" : `Middle`} tier`}
                   </strong>
                 </span>
                 <Select
@@ -1045,14 +1115,33 @@ export default function Studio() {
                       value: t.id,
                       label: `Tier ${i + 1} · ${t.diameter}″`,
                     })),
+                    ...(config.objects || []).map((o) => ({
+                      value: o.id,
+                      label: o.name,
+                    })),
                     { value: "text", label: "Lettering" },
                     { value: "topper", label: "Topper" },
                     { value: "board", label: "Cake board" },
                   ]}
                 />
               </div>
-              {selected === "text" ? (
-                <div className="studio-section">
+              <SceneActions
+                config={config}
+                selected={selected}
+                onChange={change}
+                onSelect={selectObject}
+              />
+              {selectedObject ? (
+                <ObjectInspector
+                  object={selectedObject}
+                  config={config}
+                  onChange={updateObject}
+                />
+              ) : selected === "text" ? (
+                <fieldset
+                  disabled={config.lettering!.text.locked}
+                  className="studio-section"
+                >
                   <Field label="Your message">
                     <textarea
                       rows={3}
@@ -1070,6 +1159,13 @@ export default function Studio() {
                         change((c) => ({
                           ...c,
                           textStyle: v as CakeConfig["textStyle"],
+                          lettering: {
+                            ...c.lettering!,
+                            text: {
+                              ...c.lettering!.text,
+                              font: v === "Modern" ? "helvetiker" : "optimer",
+                            },
+                          },
                         }))
                       }
                       options={["Elegant", "Modern", "Playful"]}
@@ -1098,9 +1194,12 @@ export default function Studio() {
                       }
                     />
                   </Field>
-                </div>
+                </fieldset>
               ) : selected === "topper" ? (
-                <div className="studio-section">
+                <fieldset
+                  disabled={config.lettering!.topper.locked}
+                  className="studio-section"
+                >
                   <Field label="Topper">
                     <Select
                       value={
@@ -1143,9 +1242,53 @@ export default function Studio() {
                   >
                     Remove topper
                   </Button>
-                </div>
+                </fieldset>
               ) : selected === "board" ? (
                 <div className="studio-section">
+                  <Numeric
+                    label="Board diameter (in)"
+                    min={4}
+                    max={24}
+                    value={config.board!.diameter}
+                    onChange={(diameter) =>
+                      change((c) => ({
+                        ...c,
+                        board: { ...c.board!, diameter },
+                      }))
+                    }
+                  />
+                  <Numeric
+                    label="Board thickness (in)"
+                    min={0.1}
+                    max={1}
+                    value={config.board!.thickness}
+                    onChange={(thickness) =>
+                      change((c) => ({
+                        ...c,
+                        board: { ...c.board!, thickness },
+                      }))
+                    }
+                  />
+                  <Field label="Board material">
+                    <Select
+                      value={config.board!.material}
+                      options={[...materialNames]}
+                      onChange={(material) =>
+                        change((c) => ({
+                          ...c,
+                          board: {
+                            ...c.board!,
+                            material: material as NonNullable<
+                              CakeConfig["board"]
+                            >["material"],
+                          },
+                        }))
+                      }
+                    />
+                  </Field>
+                  <p className="small-copy muted">
+                    The board grows to support wider tiers.
+                  </p>
                   <Field label="Board color">
                     <input
                       type="color"
@@ -1157,16 +1300,16 @@ export default function Studio() {
                   </Field>
                 </div>
               ) : (
-                <>
+                <fieldset
+                  className="tier-properties"
+                  disabled={selectedTier.locked}
+                >
                   <div className="studio-section">
                     <Field label="Shape">
                       <Select
-                        value={config.shape}
+                        value={selectedTier.shape ?? config.shape}
                         onChange={(v) =>
-                          change((c) => ({
-                            ...c,
-                            shape: v as CakeConfig["shape"],
-                          }))
+                          updateTier({ shape: v as CakeConfig["shape"] })
                         }
                         options={[
                           "Round",
@@ -1177,7 +1320,7 @@ export default function Studio() {
                         ]}
                       />
                     </Field>
-                    {config.shape === "Number" && (
+                    {(selectedTier.shape ?? config.shape) === "Number" && (
                       <Field label="Number">
                         <input
                           maxLength={2}
@@ -1297,53 +1440,69 @@ export default function Studio() {
                           "Minimal",
                           "Ruffled",
                           "Drip",
+                          "Rough",
+                          "Semi-naked",
+                          "Naked",
+                          "Piped",
                         ]}
                       />
                     </Field>
                   </div>
+                  <TierDetails tier={selectedTier} onChange={updateTier} />
                   <div className="studio-section">
-                    <div className="section-heading">
-                      <h3>The finishing touches</h3>
-                      <button
-                        className="text-link"
-                        onClick={() => {
-                          setLibrary("Elements");
-                          setMobilePanel("library");
-                        }}
-                      >
-                        <Plus size={13} />
-                        Add
-                      </button>
-                    </div>
-                    {selectedTier.decorations.length ? (
-                      selectedTier.decorations.map((dec) => (
-                        <div className="selected-decoration" key={dec}>
-                          <span className="decor-mini">
-                            <Flower2 size={15} />
-                          </span>
-                          <span>{dec}</span>
-                          <IconButton
-                            label={`Remove ${dec}`}
-                            onClick={() =>
-                              updateTier({
-                                decorations: selectedTier.decorations.filter(
-                                  (x) => x !== dec,
-                                ),
-                              })
-                            }
-                          >
-                            <X size={13} />
-                          </IconButton>
-                        </div>
-                      ))
-                    ) : (
-                      <p className="muted small-copy">
-                        A little simplicity is lovely, too.
-                      </p>
-                    )}
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setLibrary("Elements");
+                        setMobilePanel("library");
+                      }}
+                    >
+                      <Plus size={14} />
+                      Add decorations
+                    </Button>
                   </div>
-                </>
+                </fieldset>
               )}
+              {(selected === "text" || selected === "topper") && (
+                <LetteringDetails
+                  config={config}
+                  kind={selected}
+                  onChange={change}
+                />
+              )}
+              <div className="studio-section">
+                <details>
+                  <summary>Studio environment</summary>
+                  <Field label="Background color">
+                    <input
+                      type="color"
+                      value={config.background!.color}
+                      onChange={(e) =>
+                        change((c) => ({
+                          ...c,
+                          background: {
+                            ...c.background!,
+                            color: e.target.value,
+                          },
+                        }))
+                      }
+                    />
+                  </Field>
+                  <Numeric
+                    label="Exposure"
+                    min={0.4}
+                    max={2}
+                    step={0.05}
+                    value={config.background!.exposure}
+                    onChange={(exposure) =>
+                      change((c) => ({
+                        ...c,
+                        background: { ...c.background!, exposure },
+                      }))
+                    }
+                  />
+                </details>
+              </div>
               <div className="studio-section">
                 <Field label="Cake flavor">
                   <Select
@@ -1531,6 +1690,17 @@ export default function Studio() {
         <div
           className="studio-mobile-backdrop"
           onClick={() => setMobilePanel("none")}
+        />
+      )}
+      {modal === "image" && (
+        <ImageCakeDialog
+          onClose={() => setModal("")}
+          onApply={(c) => {
+            change(c);
+            setSelected(c.tiers.at(-1)!.id);
+            setModal("");
+            setReset((r) => r + 1);
+          }}
         />
       )}
       {modal === "quote" && (

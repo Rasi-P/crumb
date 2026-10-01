@@ -1,3 +1,4 @@
+import { normalizeCake, assets, decorationGroup, assetById } from "./cakeScene";
 import { z } from "zod";
 import { cakeSchema, decorations, type CakeConfig } from "./models";
 
@@ -42,6 +43,11 @@ export function applyDesignOperations(
         break;
       case "setShape":
         next.shape = operation.shape;
+        if (next.sceneVersion === 2)
+          next.tiers = next.tiers.map((t) => ({
+            ...t,
+            shape: operation.shape,
+          }));
         break;
       case "setText":
         next.text = operation.text;
@@ -55,6 +61,14 @@ export function applyDesignOperations(
         );
         break;
       case "addDecoration":
+        if (next.sceneVersion === 2) {
+          const asset = assets.find((a) => a.legacy === operation.decoration)!;
+          next.objects = [
+            ...(next.objects || []),
+            ...decorationGroup(asset.id, operation.tierId, 1),
+          ];
+          break;
+        }
         next.tiers = next.tiers.map((t) =>
           t.id === operation.tierId
             ? {
@@ -67,6 +81,14 @@ export function applyDesignOperations(
         );
         break;
       case "removeDecoration":
+        if (next.sceneVersion === 2) {
+          next.objects = next.objects?.filter(
+            (o) =>
+              o.attachment.tierId !== operation.tierId ||
+              assetById(o.assetId)?.legacy !== operation.decoration,
+          );
+          break;
+        }
         next.tiers = next.tiers.map((t) =>
           t.id === operation.tierId
             ? {
@@ -80,5 +102,5 @@ export function applyDesignOperations(
         break;
     }
   }
-  return cakeSchema.parse(next);
+  return cakeSchema.parse(next.sceneVersion === 2 ? normalizeCake(next) : next);
 }
