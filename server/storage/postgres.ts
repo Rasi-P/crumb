@@ -24,29 +24,32 @@ const readSql = `SELECT jsonb_build_object(
   ${tables.map((table) => `'${table}', COALESCE((SELECT jsonb_agg(data ORDER BY position) FROM crumb_${table}), '[]'::jsonb)`).join(",")}
 ) AS state FROM crumb_business WHERE id = 'luna'`;
 
+export function createPool(connectionString: string) {
+  const url = new URL(connectionString);
+  if (
+    ["require", "prefer", "verify-ca"].includes(
+      url.searchParams.get("sslmode") || "",
+    )
+  )
+    url.searchParams.set("sslmode", "verify-full");
+  const pool = new Pool({
+    connectionString: url.toString(),
+    max: 3,
+    idleTimeoutMillis: 10000,
+    connectionTimeoutMillis: 10000,
+    statement_timeout: 15000,
+    allowExitOnIdle: true,
+  });
+  if (process.env.VERCEL) attachDatabasePool(pool);
+  pool.on("error", () => console.error("The idle database connection closed."));
+  return pool;
+}
+
 export class PostgresRepository implements StateRepository {
   private readonly pool: Pool;
   private initialized?: Promise<void>;
   constructor(connectionString: string) {
-    const url = new URL(connectionString);
-    if (
-      ["require", "prefer", "verify-ca"].includes(
-        url.searchParams.get("sslmode") || "",
-      )
-    )
-      url.searchParams.set("sslmode", "verify-full");
-    this.pool = new Pool({
-      connectionString: url.toString(),
-      max: 3,
-      idleTimeoutMillis: 10000,
-      connectionTimeoutMillis: 10000,
-      statement_timeout: 15000,
-      allowExitOnIdle: true,
-    });
-    if (process.env.VERCEL) attachDatabasePool(this.pool);
-    this.pool.on("error", () =>
-      console.error("The idle database connection closed."),
-    );
+    this.pool = createPool(connectionString);
   }
   private ensureInitialized() {
     if (!this.initialized)

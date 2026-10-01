@@ -13,7 +13,8 @@
     "start": "NODE_ENV=production tsx server/index.ts",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "build:studio-assets": "node --import tsx scripts/studio/build-assets.ts"
+    "build:studio-assets": "node --import tsx scripts/studio/build-assets.ts",
+    "studio:image-to-3d-smoke": "node --env-file-if-exists=.env --import tsx scripts/studio/image-to-3d-smoke.ts"
   },
   "dependencies": {
     "@fontsource-variable/dm-sans": "^5.3.0",
@@ -33,7 +34,8 @@
     "three": "0.185.1",
     "zod": "latest",
     "zustand": "latest",
-    "three-stdlib": "2.36.1"
+    "three-stdlib": "2.36.1",
+    "three-mesh-bvh": "0.8.3"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",

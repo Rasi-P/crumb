@@ -18,12 +18,10 @@ export function Lettering({
   config,
   layout,
   kind,
-  onSelect,
 }: {
   config: CakeConfig;
   layout: TierLayout;
   kind: "text" | "topper";
-  onSelect?: (id: string) => void;
 }) {
   const settings = config.lettering![kind],
     message = config[kind];
@@ -95,10 +93,7 @@ export function Lettering({
       ]}
       rotation={settings.rotation}
       scale={settings.scale}
-      onClick={(e) => {
-        e.stopPropagation();
-        onSelect?.(kind);
-      }}
+      userData={{ sceneId: kind }}
     >
       <mesh geometry={geometry} castShadow receiveShadow>
         <ObjectMaterial

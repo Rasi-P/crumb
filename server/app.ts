@@ -9,6 +9,8 @@ import {
 import { getRepository } from "./storage";
 import { StateConflict, type StateRepository } from "./storage/types";
 import { createSessionManager } from "./auth";
+import { createStudioRoutes } from "./studio";
+import { ProviderError } from "./imageTo3d/types";
 
 class RequestError extends Error {
   constructor(
@@ -22,6 +24,7 @@ class RequestError extends Error {
 export function createApp(
   repository = getRepository,
   environment = process.env,
+  studioOptions?: Parameters<typeof createStudioRoutes>[1],
 ) {
   const app = express();
   const password = environment.OWNER_PASSWORD || "";
@@ -62,8 +65,13 @@ export function createApp(
       }
     }, revision);
   }
+  const studio = createStudioRoutes(environment, studioOptions);
+  const json = express.json({ limit: "1mb" });
   app.disable("x-powered-by");
-  app.use(express.json({ limit: "1mb" }));
+  // Studio uploads are parsed by their own routes, after authentication.
+  app.use((req, res, next) =>
+    req.path.startsWith("/api/studio/") ? next() : json(req, res, next),
+  );
   app.use((req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "same-origin");
@@ -156,6 +164,7 @@ export function createApp(
     await execute(await repository(), command);
     res.json({ ok: true });
   });
+  app.use("/api/studio", studio.publicRoutes);
   app.use("/api", async (req, res, next) => {
     if (!(await authenticated(req))) {
       res
@@ -177,6 +186,7 @@ export function createApp(
       .parse(req.body);
     res.json(await execute(await repository(), body.command, body.revision));
   });
+  app.use("/api/studio", studio.routes);
   app.use("/api", (_req, res) =>
     res.status(404).json({ error: "This API endpoint does not exist." }),
   );
@@ -191,7 +201,7 @@ export function createApp(
         res.status(409).json({ error: error.message, state: error.state });
         return;
       }
-      if (error instanceof RequestError) {
+      if (error instanceof RequestError || error instanceof ProviderError) {
         res.status(error.status).json({ error: error.message });
         return;
       }
@@ -201,6 +211,10 @@ export function createApp(
             .map((i) => `${i.path.join(".")}: ${i.message}`)
             .join("; "),
         });
+        return;
+      }
+      if ("type" in error && error.type === "entity.too.large") {
+        res.status(413).json({ error: "This upload is too large." });
         return;
       }
       if ("type" in error && error.type === "entity.parse.failed") {

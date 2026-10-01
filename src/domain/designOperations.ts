@@ -1,4 +1,10 @@
-import { normalizeCake, assets, decorationGroup, assetById } from "./cakeScene";
+import {
+  normalizeCake,
+  assets,
+  decorationGroup,
+  assetById,
+  tierIdOf,
+} from "./cakeScene";
 import { z } from "zod";
 import { cakeSchema, decorations, type CakeConfig } from "./models";
 
@@ -84,7 +90,7 @@ export function applyDesignOperations(
         if (next.sceneVersion === 2) {
           next.objects = next.objects?.filter(
             (o) =>
-              o.attachment.tierId !== operation.tierId ||
+              tierIdOf(o) !== operation.tierId ||
               assetById(o.assetId)?.legacy !== operation.decoration,
           );
           break;

@@ -5,6 +5,7 @@ import {
   tierLayout,
   attachmentPosition,
   assetById,
+  tierIdOf,
   UNIT,
   perimeterRadius,
 } from "../domain/cakeScene";
@@ -32,6 +33,41 @@ export function Cake2D({
     220 + x * scale,
     base - y * scale + z * scale * 0.22,
   ];
+  const model = config.generatedModels?.find((m) => !m.hidden);
+  // A generated mesh has no flat drawing. Where the tiers are hidden behind
+  // one, this view shows the photograph it was made from.
+  if (model && config.tiers.every((t) => t.hidden)) {
+    const photo = config.referenceImages?.[0];
+    return (
+      <svg
+        viewBox="0 0 440 440"
+        role="img"
+        aria-label={`${model.name}, a 3D model ${photo ? "generated from the reference photograph" : "edited in the 3D preview"}`}
+        className="cake-2d"
+      >
+        {photo ? (
+          <image
+            href={photo.url}
+            x="30"
+            y="30"
+            width="380"
+            height="380"
+            preserveAspectRatio="xMidYMid meet"
+          />
+        ) : (
+          <text
+            x="220"
+            y="225"
+            textAnchor="middle"
+            fontSize="15"
+            fill="#8a7777"
+          >
+            3D model · open the 3D preview to edit
+          </text>
+        )}
+      </svg>
+    );
+  }
   const select = (key: string) => ({
     role: onSelect ? ("button" as const) : undefined,
     tabIndex: onSelect ? 0 : undefined,
@@ -178,11 +214,11 @@ export function Cake2D({
         .filter(
           (o) =>
             !o.hidden &&
-            !layouts.find((l) => l.tier.id === o.attachment.tierId)?.tier
-              .hidden,
+            layouts.some((l) => l.tier.id === tierIdOf(o) && !l.tier.hidden),
         )
         .map((o) => {
-          const l = layouts.find((l) => l.tier.id === o.attachment.tierId)!;
+          const l = layouts.find((l) => l.tier.id === tierIdOf(o))!;
+          if (o.attachment.surface === "model") return null;
           if (
             o.attachment.surface === "side" &&
             Math.sin(o.attachment.angle) < -0.1

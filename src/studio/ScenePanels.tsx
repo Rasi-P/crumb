@@ -8,20 +8,25 @@ import {
   Trash2,
   ArrowUp,
   ArrowDown,
+  Box,
   Flower2,
   Layers,
   Circle,
   Type,
   Sparkles,
 } from "lucide-react";
-import { Field, Select, IconButton, Button } from "../components/ui";
+import { Field, Select, IconButton } from "../components/ui";
 import {
   materialNames,
+  type Attachment,
   type CakeConfig,
   type CakeObject,
+  type GeneratedModel,
   type Tier,
+  type TierAttachment,
 } from "../domain/models";
-import { assets, assetById, decorationGroup } from "../domain/cakeScene";
+import { assets, assetById, modelIdOf, tierIdOf } from "../domain/cakeScene";
+import { isLocked, partOf } from "./sceneEdits";
 export function Numeric({
   label,
   value,
@@ -59,11 +64,9 @@ export function Numeric({
   );
 }
 export function AssetLibrary({
-  tierId,
   onAdd,
 }: {
-  tierId: string;
-  onAdd: (objects: CakeObject[]) => void;
+  onAdd: (assetId: string, quantity: number, spread: number) => void;
 }) {
   const [quantity, setQuantity] = useState(1),
     [spacing, setSpacing] = useState(360),
@@ -71,7 +74,7 @@ export function AssetLibrary({
   return (
     <div className="studio-section asset-library">
       <h3>Decoration library</h3>
-      <p className="small-copy muted">Drag onto a tier, or click to add.</p>
+      <p className="small-copy muted">Drag onto the cake, or click to add.</p>
       <input
         aria-label="Search decorations"
         placeholder="Search flowers, pearls…"
@@ -114,17 +117,7 @@ export function AssetLibrary({
                     e.dataTransfer.setData("application/x-cake-asset", a.id);
                     e.dataTransfer.effectAllowed = "copy";
                   }}
-                  onClick={() =>
-                    onAdd(
-                      decorationGroup(
-                        a.id,
-                        tierId,
-                        quantity,
-                        spacing,
-                        Date.now() % 100000,
-                      ),
-                    )
-                  }
+                  onClick={() => onAdd(a.id, quantity, spacing)}
                   aria-label={a.id === "macaron" ? "Macarons" : a.name}
                   title={`${a.name} · ₹${a.unitPrice} each`}
                 >
@@ -164,9 +157,12 @@ export function ObjectInspector({
   config: CakeConfig;
   onChange: (o: CakeObject) => void;
 }) {
-  const patch = (p: Partial<CakeObject>) => onChange({ ...object, ...p });
-  const attach = (p: Partial<CakeObject["attachment"]>) =>
-    patch({ attachment: { ...object.attachment, ...p } });
+  const patch = (p: Partial<CakeObject>) => onChange({ ...object, ...p }),
+    a = object.attachment,
+    asset = assetById(object.assetId);
+  const attach = (p: Partial<TierAttachment>) => {
+    if (a.surface !== "model") patch({ attachment: { ...a, ...p } });
+  };
   return (
     <fieldset
       disabled={object.locked}
@@ -181,60 +177,89 @@ export function ObjectInspector({
           }}
         />
       </Field>
-      <Field label="Attached tier">
+      <Field label="Decoration type">
         <Select
-          value={object.attachment.tierId}
-          options={config.tiers.map((t, i) => ({
-            value: t.id,
-            label: `Tier ${i + 1} · ${t.diameter}″`,
-          }))}
-          onChange={(tierId) => attach({ tierId })}
+          value={object.assetId}
+          options={assets.map((x) => ({ value: x.id, label: x.name }))}
+          onChange={(assetId) => {
+            const next = assetById(assetId);
+            // Replace the piece and keep where and how it sits on the cake.
+            if (next)
+              patch({
+                assetId,
+                name: object.name === asset?.name ? next.name : object.name,
+                color: next.color,
+                material: next.material,
+                unitPrice: next.unitPrice,
+              });
+          }}
         />
       </Field>
-      <Field label="Placement">
-        <Select
-          value={object.attachment.surface}
-          options={
-            assetById(object.assetId)?.allowedPlacements || ["top", "side"]
-          }
-          onChange={(surface) => attach({ surface: surface as "top" | "side" })}
-        />
-      </Field>
+      {a.surface === "model" ? (
+        <p className="small-copy muted">
+          Attached to{" "}
+          {config.generatedModels?.find((m) => m.id === a.modelId)?.name ??
+            "the generated cake"}
+          . Drag it in the 3D view to move it across the surface.
+        </p>
+      ) : (
+        <>
+          <Field label="Attached tier">
+            <Select
+              value={a.tierId}
+              options={config.tiers.map((t, i) => ({
+                value: t.id,
+                label: `Tier ${i + 1} · ${t.diameter}″`,
+              }))}
+              onChange={(tierId) => attach({ tierId })}
+            />
+          </Field>
+          <Field label="Placement">
+            <Select
+              value={a.surface}
+              options={asset?.allowedPlacements || ["top", "side"]}
+              onChange={(surface) =>
+                attach({ surface: surface as "top" | "side" })
+              }
+            />
+          </Field>
+        </>
+      )}
       <div className="form-grid">
-        <Numeric
-          label="Angle (°)"
-          min={-360}
-          max={360}
-          step={5}
-          value={(object.attachment.angle * 180) / Math.PI}
-          onChange={(angle) => attach({ angle: (angle * Math.PI) / 180 })}
-        />
-        <Numeric
-          label={
-            object.attachment.surface === "top" ? "Radius (%)" : "Height (%)"
-          }
-          min={0}
-          max={100}
-          step={1}
-          value={
-            (object.attachment.surface === "top"
-              ? object.attachment.radius
-              : object.attachment.height) * 100
-          }
-          onChange={(v) =>
-            attach(
-              object.attachment.surface === "top"
-                ? { radius: v / 100 }
-                : { height: v / 100 },
-            )
-          }
-        />
+        {a.surface !== "model" && (
+          <>
+            <Numeric
+              label="Angle (°)"
+              min={-360}
+              max={360}
+              step={5}
+              value={(a.angle * 180) / Math.PI}
+              onChange={(angle) => attach({ angle: (angle * Math.PI) / 180 })}
+            />
+            <Numeric
+              label={a.surface === "top" ? "Radius (%)" : "Height (%)"}
+              min={0}
+              max={100}
+              step={1}
+              value={(a.surface === "top" ? a.radius : a.height) * 100}
+              onChange={(v) =>
+                attach(
+                  a.surface === "top"
+                    ? { radius: v / 100 }
+                    : { height: v / 100 },
+                )
+              }
+            />
+          </>
+        )}
         <Numeric
           label="Surface offset (in)"
           min={-0.1}
           max={2}
-          value={object.attachment.offset}
-          onChange={(offset) => attach({ offset })}
+          value={a.offset}
+          onChange={(offset) =>
+            patch({ attachment: { ...a, offset } as Attachment })
+          }
         />
         <Numeric
           label="Scale"
@@ -261,6 +286,31 @@ export function ObjectInspector({
           />
         ))}
       </div>
+      <details open={!!object.nudge}>
+        <summary>Free transform offset</summary>
+        <div className="transform-fields">
+          {["X", "Y", "Z"].map((axis, i) => (
+            <Numeric
+              key={axis}
+              label={`Offset ${axis} (in)`}
+              min={-30}
+              max={30}
+              value={object.nudge?.[i] ?? 0}
+              onChange={(v) => {
+                const nudge = [...(object.nudge ?? [0, 0, 0])] as NonNullable<
+                  CakeObject["nudge"]
+                >;
+                nudge[i] = v;
+                patch({ nudge: nudge.some(Boolean) ? nudge : undefined });
+              }}
+            />
+          ))}
+        </div>
+        <p className="small-copy muted">
+          Lifts the piece off its surface point. Dragging it on the cake snaps
+          it back to the surface.
+        </p>
+      </details>
       <Field label="Material">
         <Select
           value={object.material}
@@ -286,19 +336,110 @@ export function ObjectInspector({
         onChange={(unitPrice) => patch({ unitPrice })}
       />
       <p className="small-copy muted">
-        Position follows the tier as its dimensions change.
+        Position follows the cake as its dimensions change.
       </p>
+    </fieldset>
+  );
+}
+export function ModelInspector({
+  model,
+  onChange,
+}: {
+  model: GeneratedModel;
+  onChange: (m: GeneratedModel) => void;
+}) {
+  const patch = (p: Partial<GeneratedModel>) => onChange({ ...model, ...p });
+  return (
+    <fieldset
+      disabled={model.locked}
+      className="studio-section scene-inspector"
+    >
+      <Field label="Model name">
+        <input
+          value={model.name}
+          maxLength={100}
+          onChange={(e) => {
+            if (e.target.value) patch({ name: e.target.value });
+          }}
+        />
+      </Field>
+      <p className="small-copy muted">
+        {model.source === "generated"
+          ? "Generated from your photograph."
+          : "Imported 3D model."}{" "}
+        Its geometry and textures are kept exactly as delivered; decorations
+        attach to its surface and follow it.
+      </p>
+      <div className="form-grid">
+        <Numeric
+          label="Model width (in)"
+          min={2}
+          max={30}
+          step={0.5}
+          value={model.diameter}
+          onChange={(diameter) => patch({ diameter })}
+        />
+        <Numeric
+          label="Model turn (°)"
+          min={-360}
+          max={360}
+          step={5}
+          value={(model.rotation * 180) / Math.PI}
+          onChange={(v) => patch({ rotation: (v * Math.PI) / 180 })}
+        />
+      </div>
+      <div className="transform-fields">
+        {["X", "Y", "Z"].map((axis, i) => (
+          <Numeric
+            key={axis}
+            label={`Model position ${axis} (in)`}
+            min={-20}
+            max={20}
+            value={model.position[i]}
+            onChange={(v) => {
+              const position = [
+                ...model.position,
+              ] as GeneratedModel["position"];
+              position[i] = v;
+              patch({ position });
+            }}
+          />
+        ))}
+      </div>
+      {model.parts && (
+        <div className="model-parts">
+          <h4>Separable parts</h4>
+          {model.parts.map((part) => (
+            <label key={part.key}>
+              <input
+                type="checkbox"
+                checked={!part.hidden}
+                onChange={(e) =>
+                  patch({
+                    parts: model.parts!.map((p) =>
+                      p.key === part.key
+                        ? { ...p, hidden: !e.target.checked }
+                        : p,
+                    ),
+                  })
+                }
+              />
+              <span>{part.name}</span>
+            </label>
+          ))}
+        </div>
+      )}
     </fieldset>
   );
 }
 export function LayerTree({
   config,
-  selected,
+  selection,
   onSelect,
 }: {
   config: CakeConfig;
-  selected: string;
-  onSelect: (id: string) => void;
+  selection: string[];
+  onSelect: (id: string, additive: boolean) => void;
 }) {
   const row = (
     id: string,
@@ -309,9 +450,9 @@ export function LayerTree({
   ) => (
     <button
       key={id}
-      className={`${selected === id ? "selected" : ""} ${hidden ? "layer-hidden" : ""}`}
-      onClick={() => onSelect(id)}
-      aria-pressed={selected === id}
+      className={`${selection.includes(id) ? "selected" : ""} ${hidden ? "layer-hidden" : ""}`}
+      onClick={(e) => onSelect(id, e.shiftKey || e.metaKey || e.ctrlKey)}
+      aria-pressed={selection.includes(id)}
     >
       {icon}
       <span>{name}</span>
@@ -324,6 +465,29 @@ export function LayerTree({
       )}
     </button>
   );
+  const decorations = (owned: (o: CakeObject) => boolean) =>
+    ["Flowers", "Decorations", "Patisserie"].map((category) => {
+      const objects = (config.objects || []).filter(
+        (o) => owned(o) && assetById(o.assetId)?.category === category,
+      );
+      if (!objects.length) return null;
+      return (
+        <details
+          key={category}
+          open={
+            objects.some((o) => selection.includes(o.id)) ||
+            category === "Flowers"
+          }
+        >
+          <summary>
+            {category} <span>{objects.length}</span>
+          </summary>
+          {objects.map((o) =>
+            row(o.id, o.name, <Flower2 size={12} />, o.hidden, o.locked),
+          )}
+        </details>
+      );
+    });
   return (
     <div className="layers-panel">
       <div className="studio-library-heading">
@@ -333,6 +497,23 @@ export function LayerTree({
           decorations
         </p>
       </div>
+      {(config.generatedModels || []).map((m) => (
+        <div key={m.id}>
+          {row(m.id, m.name, <Box size={15} />, m.hidden, m.locked)}
+          <div className="layer-children">
+            {m.parts?.map((part) =>
+              row(
+                `${m.id}/${part.key}`,
+                part.name,
+                <span className="tiny-part" />,
+                part.hidden || m.hidden,
+                m.locked,
+              ),
+            )}
+            {decorations((o) => modelIdOf(o) === m.id)}
+          </div>
+        </div>
+      ))}
       {[...config.tiers].reverse().map((t, i) => (
         <div key={t.id}>
           {row(
@@ -350,36 +531,7 @@ export function LayerTree({
               t.hidden,
               t.locked,
             )}
-            {["Flowers", "Decorations", "Patisserie"].map((category) => {
-              const objects = (config.objects || []).filter(
-                (o) =>
-                  o.attachment.tierId === t.id &&
-                  assetById(o.assetId)?.category === category,
-              );
-              if (!objects.length) return null;
-              return (
-                <details
-                  key={category}
-                  open={
-                    objects.some((o) => o.id === selected) ||
-                    category === "Flowers"
-                  }
-                >
-                  <summary>
-                    {category} <span>{objects.length}</span>
-                  </summary>
-                  {objects.map((o) =>
-                    row(
-                      o.id,
-                      o.name,
-                      <Flower2 size={12} />,
-                      o.hidden,
-                      o.locked,
-                    ),
-                  )}
-                </details>
-              );
-            })}
+            {decorations((o) => tierIdOf(o) === t.id)}
           </div>
         </div>
       ))}
@@ -399,81 +551,62 @@ export function LayerTree({
           config.lettering?.text.hidden,
           config.lettering?.text.locked,
         )}
-      {row("board", "Cake board", <Circle size={15} />)}
+      {row("board", "Cake board", <Circle size={15} />, config.board?.hidden)}
     </div>
   );
 }
 export function SceneActions({
   config,
-  selected,
+  selection,
   onChange,
   onSelect,
+  onDuplicate,
+  onDelete,
 }: {
   config: CakeConfig;
-  selected: string;
+  selection: string[];
   onChange: (c: CakeConfig) => void;
-  onSelect: (id: string) => void;
+  onSelect: (ids: string[]) => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
 }) {
-  const o = config.objects?.find((o) => o.id === selected),
+  const selected = selection.at(-1) ?? "",
+    o = config.objects?.find((o) => o.id === selected),
     t = config.tiers.find((t) => t.id === selected),
-    letter = selected === "text" || selected === "topper" ? selected : null;
-  const locked =
-      o?.locked ??
-      t?.locked ??
-      (letter ? config.lettering?.[letter].locked : false),
+    model = config.generatedModels?.find((m) => m.id === selected),
+    part = partOf(config, selected),
+    letter = selected === "text" || selected === "topper" ? selected : null,
+    board = selected === "board";
+  if (!o && !t && !model && !part && !letter && !board) return null;
+  const locked = isLocked(config, selected),
     hidden =
       o?.hidden ??
       t?.hidden ??
-      (letter ? config.lettering?.[letter].hidden : false);
-  if (!o && !t && !letter) return null;
+      model?.hidden ??
+      part?.model.parts?.find((p) => p.key === part.key)?.hidden ??
+      (letter ? config.lettering?.[letter].hidden : config.board?.hidden) ??
+      false;
+  // Visibility and locking apply to everything selected at once.
   const flag = (key: "hidden" | "locked", value: boolean) => {
     const c = structuredClone(config);
-    if (o)
-      c.objects = c.objects!.map((x) =>
-        x.id === selected ? { ...x, [key]: value } : x,
-      );
-    else if (t)
-      c.tiers = c.tiers.map((x) =>
-        x.id === selected ? { ...x, [key]: value } : x,
-      );
-    else if (letter) c.lettering![letter][key] = value;
-    onChange(c);
-  };
-  const remove = () => {
-    const c = structuredClone(config);
-    if (o) c.objects = c.objects!.filter((x) => x.id !== selected);
-    else if (t) {
-      c.tiers = c.tiers.filter((x) => x.id !== selected);
-      c.objects = c.objects!.filter((x) => x.attachment.tierId !== selected);
-    } else if (letter) c[letter] = "";
-    onChange(c);
-    onSelect(c.tiers.at(-1)!.id);
-  };
-  const duplicate = () => {
-    const c = structuredClone(config),
-      id = crypto.randomUUID();
-    if (o)
-      c.objects!.push({
-        ...structuredClone(o),
-        id,
-        name: `${o.name} copy`,
-        attachment: { ...o.attachment, angle: o.attachment.angle + 0.18 },
-        locked: false,
-      });
-    else if (t) {
-      c.tiers.push({ ...structuredClone(t), id, locked: false });
-      c.objects!.push(
-        ...c
-          .objects!.filter((x) => x.attachment.tierId === t.id)
-          .map((x) => ({
-            ...structuredClone(x),
-            id: crypto.randomUUID(),
-            attachment: { ...x.attachment, tierId: id },
-          })),
-      );
+    for (const id of selection) {
+      const piece = partOf(c, id);
+      if (piece) {
+        if (key === "hidden")
+          piece.model.parts = piece.model.parts?.map((p) =>
+            p.key === piece.key ? { ...p, hidden: value } : p,
+          );
+      } else if (id === "board") {
+        if (key === "hidden") c.board!.hidden = value;
+      } else if (id === "text" || id === "topper")
+        c.lettering![id][key] = value;
+      else
+        for (const list of [c.objects!, c.tiers, c.generatedModels || []]) {
+          const item = list.find((x) => x.id === id);
+          if (item) item[key] = value;
+        }
     }
     onChange(c);
-    onSelect(id);
   };
   const reorder = (direction: number) => {
     const c = structuredClone(config),
@@ -490,45 +623,55 @@ export function SceneActions({
     <div className="scene-actions">
       <IconButton
         label="Duplicate object"
-        disabled={!!locked || !!letter || (!!t && config.tiers.length >= 4)}
-        onClick={duplicate}
+        disabled={locked || (!o && !t) || (!!t && config.tiers.length >= 4)}
+        onClick={onDuplicate}
       >
         <Copy size={15} />
       </IconButton>
-      <IconButton
-        label={locked ? "Unlock object" : "Lock object"}
-        onClick={() => flag("locked", !locked)}
-      >
-        {locked ? <Unlock size={15} /> : <Lock size={15} />}
-      </IconButton>
+      {!part && !board && (
+        <IconButton
+          label={locked ? "Unlock object" : "Lock object"}
+          onClick={() => flag("locked", !locked)}
+        >
+          {locked ? <Unlock size={15} /> : <Lock size={15} />}
+        </IconButton>
+      )}
       <IconButton
         label={hidden ? "Show object" : "Hide object"}
         onClick={() => flag("hidden", !hidden)}
       >
         {hidden ? <Eye size={15} /> : <EyeOff size={15} />}
       </IconButton>
-      {!letter && (
+      {(o || t) && (
         <>
           <IconButton
             label="Move layer up"
-            disabled={!!locked}
+            disabled={locked}
             onClick={() => reorder(1)}
           >
             <ArrowUp size={15} />
           </IconButton>
           <IconButton
             label="Move layer down"
-            disabled={!!locked}
+            disabled={locked}
             onClick={() => reorder(-1)}
           >
             <ArrowDown size={15} />
           </IconButton>
         </>
       )}
+      {part && (
+        <IconButton
+          label="Select whole model"
+          onClick={() => onSelect([part.model.id])}
+        >
+          <Box size={15} />
+        </IconButton>
+      )}
       <IconButton
         label="Delete object"
-        disabled={!!locked || (!!t && config.tiers.length === 1)}
-        onClick={remove}
+        disabled={locked || board || (!!t && config.tiers.length === 1)}
+        onClick={onDelete}
       >
         <Trash2 size={15} />
       </IconButton>

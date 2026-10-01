@@ -1,4 +1,8 @@
-@font-face { font-family: "Great Vibes"; src: url("/assets/fonts/GreatVibes-Regular.ttf") format("truetype"); font-display: swap; }
+@font-face {
+  font-family: "Great Vibes";
+  src: url("/assets/fonts/GreatVibes-Regular.ttf") format("truetype");
+  font-display: swap;
+}
 .studio-shell {
   height: 100dvh;
   display: flex;
@@ -2130,4 +2134,211 @@ fieldset:disabled {
 }
 .layers-panel .layer-children .tiny-color {
   margin-left: 0;
+}
+/* Generated-model workflow, direct manipulation and reference comparison */
+.scene-toolstrip {
+  align-items: center;
+}
+.scene-toolstrip input[type="range"] {
+  width: 84px;
+  accent-color: #8a6a96;
+}
+.reference-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  z-index: 3;
+}
+.selection-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  transform: translate(-50%, calc(-100% - 46px));
+  background: #fffdf9f2;
+  border: 1px solid #d9cdd8;
+  border-radius: 9px;
+  box-shadow: 0 6px 20px #38241a24;
+  white-space: nowrap;
+  user-select: none;
+}
+.selection-toolbar button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  color: #6d5a76;
+  touch-action: none;
+}
+.selection-toolbar button:hover,
+.selection-toolbar button:focus-visible {
+  background: #eee3ee;
+}
+.selection-toolbar .drag-handle {
+  cursor: ew-resize;
+}
+.selection-toolbar-size {
+  min-width: 38px;
+  padding: 0 4px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: #786758;
+}
+.layers-panel .layer-children button > .tiny-part {
+  flex: 0 0 9px;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  border: 1px solid #a996ad;
+}
+.model-parts {
+  margin-top: 14px;
+}
+.model-parts h4 {
+  font-size: 11px;
+  margin-bottom: 8px;
+  color: #796880;
+}
+.model-parts label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12px;
+}
+.image-cake-workflow {
+  align-items: start;
+}
+.service-notice {
+  grid-column: 1 / -1;
+  padding: 12px 14px;
+  border: 1px solid #e3c9a4;
+  border-radius: 8px;
+  background: #fdf5e6;
+  color: #6f5326;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.service-notice strong {
+  font-size: 13px;
+}
+.service-notice p {
+  margin-top: 4px;
+}
+.reference-views {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  border: 0;
+  padding: 0;
+  min-width: 0;
+}
+.reference-views legend {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: #5f4b68;
+}
+.reference-view {
+  position: relative;
+}
+.reference-view:first-of-type {
+  grid-column: 1 / -1;
+}
+.reference-view label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 108px;
+  padding: 12px;
+  border: 1px dashed #cdbccb;
+  border-radius: 10px;
+  background: #f6f0ec;
+  color: #8a7777;
+  font-size: 11px;
+  cursor: pointer;
+}
+.reference-view:first-of-type label {
+  min-height: 190px;
+}
+.reference-view label:focus-within {
+  outline: 2px solid #8a6a96;
+  outline-offset: 2px;
+}
+.reference-view img {
+  max-width: 100%;
+  max-height: 150px;
+  object-fit: contain;
+  border-radius: 6px;
+}
+.reference-view:not(:first-of-type) img {
+  max-height: 70px;
+}
+.reference-view input,
+.model-import input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.reference-view > button {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fffdf9;
+  border: 1px solid #d9cdd8;
+  color: #6d5a76;
+}
+.generation-progress {
+  display: grid;
+  gap: 7px;
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #f4eef5;
+  font-size: 12px;
+  color: #5f4b68;
+}
+.generation-progress progress {
+  width: 100%;
+  height: 6px;
+  accent-color: #8a6a96;
+}
+.generation-progress small {
+  color: #8b7987;
+  line-height: 1.5;
+}
+.model-import {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px solid #ddd4ce;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #6d5a76;
+  cursor: pointer;
+}
+.model-import:focus-within {
+  outline: 2px solid #8a6a96;
+  outline-offset: 2px;
+}
+@media (max-width: 960px) {
+  .scene-toolstrip input[type="range"] {
+    width: 60px;
+  }
 }

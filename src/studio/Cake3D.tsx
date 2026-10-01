@@ -1,15 +1,20 @@
 import {
   Component,
   Suspense,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
   type ReactNode,
+  type RefObject,
 } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { Environment, OrbitControls } from "@react-three/drei";
-import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
+import type {
+  OrbitControls as OrbitControlsImpl,
+  TransformControls as TransformControlsImpl,
+} from "three-stdlib";
 import * as THREE from "three";
 import type {
   Attachment,
@@ -19,7 +24,6 @@ import type {
 } from "../domain/models";
 import {
   assetById,
-  attachmentFromPoint,
   normalizeCake,
   tierLayout,
   UNIT,
@@ -29,34 +33,67 @@ import {
 import { tierGeometry, dripGeometry } from "./scene/geometry";
 import { FrostingMaterial, ObjectMaterial } from "./scene/materials";
 import { Decoration, SmallDecorations } from "./scene/Decorations";
+import { GeneratedModel } from "./scene/GeneratedModel";
+import { Interaction, type SceneApi } from "./scene/Interaction";
+import { SelectionToolbar } from "./scene/SelectionToolbar";
+import type { SceneContext } from "./scene/placement";
 import { Lettering } from "./scene/Lettering";
 import { StudioPostprocessing } from "./scene/StudioPostprocessing";
 import { ContactShadow } from "./scene/ContactShadow";
 import { Cake2D } from "./Cake2D";
+export type { SceneApi };
 type Props = {
   config: CakeConfig;
-  selected?: string;
-  onSelect?: (id: string) => void;
+  selection?: string[];
+  // null clears the selection; additive toggles membership (shift-click).
+  onSelect?: (id: string | null, additive: boolean) => void;
   view?: string;
   zoom?: number;
   reset?: number;
   autoRotate?: boolean;
   tool?: string;
+  api?: RefObject<SceneApi | null>;
   onObjectChange?: (o: CakeObject) => void;
   onPlace?: (assetId: string, attachment: Attachment) => void;
+  onDuplicate?: () => void;
+  onDelete?: () => void;
+  onModelError?: (message: string) => void;
 };
+// What the camera and shadows need to cover: visible tiers, the board, and
+// any generated model standing in for them.
+function sceneExtent(config: CakeConfig) {
+  const all = tierLayout(config),
+    models = (config.generatedModels || []).filter((m) => !m.hidden),
+    visible = all.filter((l) => !l.tier.hidden),
+    layouts = visible.length || models.length ? visible : all;
+  return {
+    height: Math.max(
+      0.4,
+      ...layouts.map((l) => l.top + (config.topper ? 0.75 : 0.28)),
+      ...models.map(
+        (m) => (m.position[1] + m.height * m.diameter) * UNIT + 0.2,
+      ),
+    ),
+    radius:
+      Math.max(
+        config.board!.hidden ? 0 : (config.board!.diameter * UNIT) / 2,
+        ...layouts.map((l) => l.radius + Math.hypot(l.x, l.z)),
+        ...models.map(
+          (m) =>
+            (m.diameter * 0.62 + Math.hypot(m.position[0], m.position[2])) *
+            UNIT,
+        ),
+      ) + 0.45,
+  };
+}
 function TierMesh({
   layout,
   shape,
-  selected,
-  onSelect,
   number,
 }: {
   number: string;
   layout: TierLayout;
   shape: CakeConfig["shape"];
-  selected: boolean;
-  onSelect?: Props["onSelect"];
 }) {
   const { tier, radius, height, bottom, x, z } = layout;
   const geometry = useMemo(
@@ -83,16 +120,12 @@ function TierMesh({
   useEffect(() => () => drip?.dispose(), [drip]);
   if (tier.hidden) return null;
   return (
-    <group position={[x, bottom, z]}>
+    <group position={[x, bottom, z]} userData={{ sceneId: tier.id }}>
       <mesh
         geometry={geometry}
-        userData={{ tierId: tier.id }}
+        userData={{ surface: { type: "tier", id: tier.id } }}
         castShadow
         receiveShadow
-        onClick={(e) => {
-          e.stopPropagation();
-          onSelect?.(tier.id);
-        }}
       >
         <FrostingMaterial tier={tier} />
       </mesh>
@@ -113,17 +146,6 @@ function TierMesh({
           tier={tier}
           shape={tier.shape ?? shape}
         />
-      )}{" "}
-      {selected && (
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.006, 0]}>
-          <ringGeometry args={[radius + 0.025, radius + 0.032, 128]} />
-          <meshBasicMaterial
-            color="#947c9b"
-            transparent
-            opacity={0.5}
-            depthWrite={false}
-          />
-        </mesh>
       )}
     </group>
   );
@@ -178,145 +200,35 @@ function Piping({
     </>
   );
 }
-function SurfacePlacement({
-  config,
-  selected,
-  tool,
-  onObjectChange,
-  onPlace,
-  onPreview,
-}: {
-  config: CakeConfig;
-  selected?: string;
-  tool?: string;
-  onObjectChange?: Props["onObjectChange"];
-  onPlace?: Props["onPlace"];
-  onPreview: (o: CakeObject | null) => void;
-}) {
-  const { gl, camera, scene } = useThree();
-  useEffect(() => {
-    const canvas = gl.domElement,
-      ray = new THREE.Raycaster();
-    let drag = false,
-      last: CakeObject | null = null;
-    const layouts = tierLayout(config);
-    const hit = (e: MouseEvent | DragEvent) => {
-      const rect = canvas.getBoundingClientRect();
-      ray.setFromCamera(
-        new THREE.Vector2(
-          ((e.clientX - rect.left) / rect.width) * 2 - 1,
-          (-(e.clientY - rect.top) / rect.height) * 2 + 1,
-        ),
-        camera,
-      );
-      // Only tier surfaces can receive decorations. Avoid intersecting every
-      // petal and extruded letter on each pointer movement.
-      const surfaces: THREE.Object3D[] = [];
-      scene.traverseVisible((o) => {
-        if (o instanceof THREE.Mesh && o.userData.tierId) surfaces.push(o);
-      });
-      const hit = ray.intersectObjects(surfaces, false)[0];
-      if (!hit) return null;
-      const l = layouts.find((l) => l.tier.id === hit.object.userData.tierId)!;
-      return attachmentFromPoint(
-        hit.point.toArray(),
-        l,
-        config.shape,
-        (hit.face?.normal.y ?? 0) > 0.5,
-      );
-    };
-    const selectedObject = config.objects?.find(
-      (o) => o.id === selected && !o.locked && !o.hidden,
+function CakeScene(props: Props & { onReady: () => void }) {
+  const { config, onSelect } = props,
+    selection = props.selection ?? [],
+    tool = props.tool ?? "select",
+    layouts = useMemo(() => tierLayout(config), [config]),
+    context = useMemo<SceneContext>(
+      () => ({
+        layouts,
+        models: config.generatedModels || [],
+        shape: config.shape,
+      }),
+      [layouts, config.generatedModels, config.shape],
     );
-    const move = (e: PointerEvent) => {
-      if (!drag || !selectedObject) return;
-      const attachment = hit(e);
-      if (attachment) {
-        const a = assetById(selectedObject.assetId);
-        if (!a?.allowedPlacements.includes(attachment.surface)) return;
-        last = { ...selectedObject, attachment };
-        onPreview(last);
-      }
-    };
-    const down = (e: PointerEvent) => {
-      if (tool !== "move" || !selectedObject || e.button !== 0) return;
-      drag = true;
-      canvas.setPointerCapture(e.pointerId);
-      move(e);
-    };
-    const up = (e: PointerEvent) => {
-      if (!drag) return;
-      drag = false;
-      if (last) onObjectChange?.(last);
-      last = null;
-      onPreview(null);
-      if (canvas.hasPointerCapture(e.pointerId))
-        canvas.releasePointerCapture(e.pointerId);
-    };
-    const cancel = () => {
-      drag = false;
-      last = null;
-      onPreview(null);
-    };
-    const over = (e: DragEvent) => {
-      if (e.dataTransfer?.types.includes("application/x-cake-asset")) {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
-      }
-    };
-    const drop = (e: DragEvent) => {
-      const id = e.dataTransfer?.getData("application/x-cake-asset");
-      if (!id) return;
-      e.preventDefault();
-      const attachment = hit(e),
-        a = assetById(id);
-      if (attachment && a?.allowedPlacements.includes(attachment.surface))
-        onPlace?.(id, attachment);
-    };
-    canvas.addEventListener("pointerdown", down);
-    canvas.addEventListener("pointermove", move);
-    canvas.addEventListener("pointerup", up);
-    canvas.addEventListener("pointercancel", cancel);
-    canvas.addEventListener("dragover", over);
-    canvas.addEventListener("drop", drop);
-    return () => {
-      canvas.removeEventListener("pointerdown", down);
-      canvas.removeEventListener("pointermove", move);
-      canvas.removeEventListener("pointerup", up);
-      canvas.removeEventListener("pointercancel", cancel);
-      canvas.removeEventListener("dragover", over);
-      canvas.removeEventListener("drop", drop);
-    };
-  }, [
-    config,
-    selected,
-    tool,
-    gl,
-    camera,
-    scene,
-    onObjectChange,
-    onPlace,
-    onPreview,
-  ]);
-  return null;
-}
-function CakeScene(props: Props) {
-  const { config, selected, onSelect } = props,
-    layouts = useMemo(() => tierLayout(config), [config]);
-  const [preview, setPreview] = useState<CakeObject | null>(null);
+  // Live positions while a drag is in progress; committed to history once.
+  const [dragged, setDragged] = useState<CakeObject | null>(null),
+    [adjusted, setAdjusted] = useState<CakeObject | null>(null),
+    gizmo = useRef<TransformControlsImpl>(null),
+    preview = dragged ?? adjusted;
   const objects = (config.objects || [])
     .map((o) => (preview?.id === o.id ? preview : o))
-    .filter(
-      (o) =>
-        !o.hidden &&
-        !layouts.find((l) => l.tier.id === o.attachment.tierId)?.tier.hidden,
-    );
+    .filter((o) => !o.hidden);
   const small = objects.filter(
     (o) =>
-      o.id !== selected &&
+      !selection.includes(o.id) &&
       ["pearl", "sprinkle", "foil"].includes(assetById(o.assetId)?.kind || ""),
   );
   const other = objects.filter((o) => !small.includes(o));
+  const single =
+    selection.length === 1 ? objects.find((o) => o.id === selection[0]) : null;
   const boardRadius =
     Math.max(
       config.board!.diameter / 2,
@@ -347,64 +259,83 @@ function CakeScene(props: Props) {
   useEffect(() => () => boardGeometry.dispose(), [boardGeometry]);
   return (
     <>
-      <mesh
-        geometry={boardGeometry}
-        castShadow
-        receiveShadow
-        onClick={(e) => {
-          e.stopPropagation();
-          onSelect?.("board");
-        }}
-      >
-        <ObjectMaterial
-          object={{
-            color: config.boardColor,
-            material: config.board!.material,
-          }}
-        />
-      </mesh>
+      {!config.board!.hidden && (
+        <mesh
+          geometry={boardGeometry}
+          userData={{ sceneId: "board" }}
+          castShadow
+          receiveShadow
+        >
+          <ObjectMaterial
+            object={{
+              color: config.boardColor,
+              material: config.board!.material,
+            }}
+          />
+        </mesh>
+      )}
       {layouts.map((l) => (
         <TierMesh
           key={l.tier.id}
           layout={l}
           shape={config.shape}
           number={config.number}
-          selected={selected === l.tier.id}
-          onSelect={props.tool === "move" ? undefined : onSelect}
         />
       ))}
-      <SmallDecorations
-        objects={small}
-        layouts={layouts}
-        shape={config.shape}
-        selected={selected}
-        onSelect={onSelect}
-      />
+      {(config.generatedModels || []).map((m) => (
+        <GeneratedModel
+          key={m.id}
+          model={m}
+          onReady={props.onReady}
+          onError={props.onModelError}
+        />
+      ))}
+      <SmallDecorations objects={small} context={context} />
       {other.map((o) => (
         <Decoration
           key={o.id}
           object={o}
-          layout={layouts.find((l) => l.tier.id === o.attachment.tierId)!}
-          shape={config.shape}
-          selected={o.id === selected}
-          onSelect={onSelect}
+          context={context}
+          selected={single?.id === o.id}
           onChange={props.onObjectChange}
-          tool={props.tool}
+          tool={tool}
+          gizmo={gizmo}
         />
       ))}
-      <Lettering
-        config={config}
-        kind="text"
-        layout={layouts[0]}
-        onSelect={onSelect}
-      />
+      <Lettering config={config} kind="text" layout={layouts[0]} />
       <Lettering
         config={config}
         kind="topper"
         layout={layouts[layouts.length - 1]}
-        onSelect={onSelect}
       />
-      <SurfacePlacement {...props} onPreview={setPreview} />
+      {single &&
+        !single.locked &&
+        !dragged &&
+        tool === "select" &&
+        props.onObjectChange && (
+          <SelectionToolbar
+            object={single}
+            context={context}
+            onPreview={setAdjusted}
+            onChange={props.onObjectChange}
+            onDuplicate={props.onDuplicate}
+            onDelete={props.onDelete}
+          />
+        )}
+      {onSelect && (
+        <Interaction
+          objects={config.objects || []}
+          context={context}
+          selection={selection}
+          tool={tool}
+          gizmo={gizmo}
+          api={props.api}
+          onSelect={onSelect}
+          onObjectChange={props.onObjectChange}
+          onPlace={props.onPlace}
+          onPreview={setDragged}
+        />
+      )}
     </>
   );
 }
@@ -414,20 +345,10 @@ function CameraControls({
   zoom = 0,
   reset = 0,
   autoRotate = false,
-  tool,
 }: Props) {
   const controls = useRef<OrbitControlsImpl>(null);
   const { camera, size, invalidate } = useThree();
-  const layouts = tierLayout(config),
-    height = layouts.at(-1)!.top + (config.topper ? 0.75 : 0.28);
-  const radius =
-    Math.max(
-      (config.board!.diameter * UNIT) / 2,
-      ...layouts.map((l) => l.radius + Math.hypot(l.x, l.z)),
-    ) + 0.45;
-  const layoutKey = layouts
-    .map((l) => `${l.radius}:${l.x}:${l.z}:${l.top}`)
-    .join("|");
+  const { height, radius } = sceneExtent(config);
   useEffect(() => {
     const target = new THREE.Vector3(0, height * 0.48, 0),
       aspect = size.width / Math.max(1, size.height),
@@ -457,7 +378,6 @@ function CameraControls({
     view,
     zoom,
     reset,
-    layoutKey,
     height,
     radius,
     camera,
@@ -469,7 +389,6 @@ function CameraControls({
     <OrbitControls
       ref={controls}
       makeDefault
-      enabled={tool !== "move"}
       enablePan
       enableDamping
       dampingFactor={0.08}
@@ -493,13 +412,19 @@ class RenderBoundary extends Component<
     return this.state.failed ? this.props.fallback : this.props.children;
   }
 }
-function StudioLighting({ config }: { config: CakeConfig }) {
+function StudioLighting({
+  config,
+  revision,
+}: {
+  config: CakeConfig;
+  revision: number;
+}) {
   const { gl } = useThree();
   useEffect(() => {
     gl.toneMapping = THREE.ACESFilmicToneMapping;
     gl.toneMappingExposure = config.background!.exposure * 0.88;
   }, [gl, config.background!.exposure]);
-  const height = tierLayout(config).at(-1)!.top;
+  const { height } = sceneExtent(config);
   return (
     <>
       <color attach="background" args={[config.background!.color]} />
@@ -546,12 +471,18 @@ function StudioLighting({ config }: { config: CakeConfig }) {
           roughness={0.94}
         />
       </mesh>
-      <ContactShadow revision={JSON.stringify(config)} height={height} />
+      <ContactShadow
+        revision={`${JSON.stringify(config)}:${revision}`}
+        height={height}
+      />
     </>
   );
 }
 export default function Cake3D(props: Props) {
   const config = useMemo(() => normalizeCake(props.config), [props.config]);
+  // Bumped when a model finishes loading so contact shading includes it.
+  const [loaded, setLoaded] = useState(0),
+    onReady = useCallback(() => setLoaded((n) => n + 1), []);
   const fallback = (
     <div className="webgl-fallback">
       <p>3D preview is unavailable. You can continue editing in 2D Design.</p>
@@ -569,10 +500,10 @@ export default function Cake3D(props: Props) {
           gl={{ antialias: true, preserveDrawingBuffer: true, alpha: false }}
           fallback={fallback}
         >
-          <StudioLighting config={config} />
-          <CakeScene {...props} config={config} />
+          <StudioLighting config={config} revision={loaded} />
+          <CakeScene {...props} config={config} onReady={onReady} />
           <CameraControls {...props} config={config} />
-          <StudioPostprocessing />
+          <StudioPostprocessing selection={props.selection} />
         </Canvas>
       </RenderBoundary>
     </div>

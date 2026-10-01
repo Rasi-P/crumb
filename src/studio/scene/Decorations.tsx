@@ -4,39 +4,19 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   type ReactNode,
+  type Ref,
 } from "react";
 import { useGLTF, TransformControls } from "@react-three/drei";
-import type { ThreeEvent } from "@react-three/fiber";
+import { useThree } from "@react-three/fiber";
 import * as THREE from "three";
-import type { CakeConfig, CakeObject } from "../../domain/models";
-import {
-  assetById,
-  attachmentPosition,
-  seedValue,
-  perimeterRadius,
-  type TierLayout,
-} from "../../domain/cakeScene";
+import type { TransformControls as TransformControlsImpl } from "three-stdlib";
+import type { CakeObject } from "../../domain/models";
+import { assetById, seedValue, UNIT } from "../../domain/cakeScene";
 import { flowerGeometry, leafGeometry, foilGeometry } from "./geometry";
 import { ObjectMaterial, materialPresets, petalTexture } from "./materials";
-const up = new THREE.Vector3(0, 1, 0);
-export function attachmentQuaternion(
-  o: CakeObject,
-  shape: CakeConfig["shape"] = "Round",
-) {
-  const a = o.attachment.angle,
-    epsilon = 0.0001,
-    r0 = perimeterRadius(shape, 1, a - epsilon),
-    r1 = perimeterRadius(shape, 1, a + epsilon);
-  const dx = Math.cos(a + epsilon) * r1 - Math.cos(a - epsilon) * r0,
-    dz = Math.sin(a + epsilon) * r1 - Math.sin(a - epsilon) * r0;
-  return new THREE.Quaternion().setFromUnitVectors(
-    up,
-    o.attachment.surface === "top"
-      ? up
-      : new THREE.Vector3(dz, 0, -dx).normalize(),
-  );
-}
+import { placementOf, type SceneContext } from "./placement";
 
 class AssetBoundary extends Component<
   { children: ReactNode; fallback: ReactNode },
@@ -92,14 +72,17 @@ function FlowerAsset({ object, url }: { object: CakeObject; url: string }) {
     });
     return c;
   }, [scene, object.color, object.seed, object.material, bump]);
-  useEffect(
-    () => () =>
+  // The canvas renders on demand; show the model as soon as it has loaded
+  // instead of leaving the placeholder up until the next interaction.
+  const invalidate = useThree((state) => state.invalidate);
+  useEffect(() => {
+    invalidate();
+    return () =>
       clone.traverse((child) => {
         if (child instanceof THREE.Mesh && child.name === "Petals")
           child.material.dispose();
-      }),
-    [clone],
-  );
+      });
+  }, [clone, invalidate]);
   return <primitive object={clone} dispose={null} />;
 }
 function Leaf({ object }: { object: CakeObject }) {
@@ -281,92 +264,96 @@ function DecorationAsset({ object }: { object: CakeObject }) {
 }
 export function Decoration({
   object,
-  layout,
-  shape,
+  context,
   selected,
-  onSelect,
   onChange,
   tool,
+  gizmo,
 }: {
   object: CakeObject;
-  layout: TierLayout;
-  shape: CakeConfig["shape"];
+  context: SceneContext;
   selected: boolean;
-  onSelect?: (id: string) => void;
   onChange?: (o: CakeObject) => void;
   tool?: string;
+  gizmo?: Ref<TransformControlsImpl>;
 }) {
-  const transform = useRef<THREE.Group>(null);
-  const attachedRotation = attachmentQuaternion(
-    object,
-    layout.tier.shape ?? shape,
-  );
-  const p = attachmentPosition(object.attachment, layout, shape);
-  const body = (
-    <group
-      ref={transform}
-      rotation={object.rotation}
-      scale={object.scale}
-      onClick={(e) => {
-        e.stopPropagation();
-        onSelect?.(object.id);
-      }}
-    >
-      <DecorationAsset object={object} />
-      {selected && (
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.008, 0]}>
-          <ringGeometry args={[0.36, 0.369, 64]} />
-          <meshBasicMaterial
-            color="#9673a3"
-            side={THREE.DoubleSide}
-            depthTest={false}
-            transparent
-            opacity={0.65}
-          />
-        </mesh>
-      )}
-    </group>
-  );
+  // State rather than refs: the gizmo attaches once these nodes exist.
+  const [anchor, setAnchor] = useState<THREE.Group | null>(null),
+    [body, setBody] = useState<THREE.Group | null>(null);
+  const placement = placementOf(object, context);
+  if (!placement) return null;
+  const mode =
+    selected && !object.locked && onChange
+      ? tool === "rotate"
+        ? "rotate"
+        : tool === "scale"
+          ? "scale"
+          : tool === "free"
+            ? "translate"
+            : null
+      : null;
   return (
-    <group position={p} quaternion={attachedRotation}>
-      {selected && !object.locked && (tool === "rotate" || tool === "scale") ? (
+    <>
+      <group
+        ref={setAnchor}
+        position={placement.position}
+        quaternion={placement.quaternion}
+      >
+        <group
+          ref={setBody}
+          rotation={object.rotation}
+          scale={object.scale}
+          userData={{ sceneId: object.id }}
+        >
+          <DecorationAsset object={object} />
+        </group>
+      </group>
+      {mode && anchor && body && (
         <TransformControls
-          mode={tool}
+          ref={gizmo}
+          object={mode === "translate" ? anchor : body}
+          mode={mode}
           size={0.7}
-          space="local"
+          space={mode === "translate" ? "world" : "local"}
+          // Size stays uniform; one handle is enough.
+          showY={mode !== "scale"}
+          showZ={mode !== "scale"}
           onMouseUp={() => {
-            const g = transform.current;
-            if (g)
+            if (mode === "translate") {
+              // Free Transform lifts the object off its surface point; the
+              // attachment is kept so it still follows the cake.
+              const offset = anchor.position
+                .clone()
+                .sub(placement.position)
+                .divideScalar(UNIT)
+                .add(new THREE.Vector3(...(object.nudge ?? [0, 0, 0])));
               onChange?.({
                 ...object,
-                rotation: [g.rotation.x, g.rotation.y, g.rotation.z],
-                scale: Math.max(0.1, Math.min(4, g.scale.x)),
+                nudge: [
+                  Math.max(-30, Math.min(30, offset.x)),
+                  Math.max(-30, Math.min(30, offset.y)),
+                  Math.max(-30, Math.min(30, offset.z)),
+                ],
+              });
+            } else
+              onChange?.({
+                ...object,
+                rotation: [body.rotation.x, body.rotation.y, body.rotation.z],
+                scale: Math.max(0.1, Math.min(4, body.scale.x)),
               });
           }}
-          showY={tool === "rotate"}
-          showZ={tool === "rotate"}
-        >
-          {body}
-        </TransformControls>
-      ) : (
-        body
+        />
       )}
-    </group>
+    </>
   );
 }
 // Each instance retains its own ID, transform, price, and selection. Batching only affects rendering.
 export function SmallDecorations({
   objects,
-  layouts,
-  shape,
-  selected,
-  onSelect,
+  context,
 }: {
   objects: CakeObject[];
-  layouts: TierLayout[];
-  shape: CakeConfig["shape"];
-  selected?: string;
-  onSelect?: (id: string) => void;
+  context: SceneContext;
 }) {
   const groups = useMemo(() => {
     const result = new Map<string, CakeObject[]>();
@@ -382,10 +369,7 @@ export function SmallDecorations({
         <InstanceBatch
           key={`${group[0].assetId}-${group[0].material}`}
           objects={group}
-          layouts={layouts}
-          shape={shape}
-          selected={selected}
-          onSelect={onSelect}
+          context={context}
         />
       ))}
     </>
@@ -393,16 +377,10 @@ export function SmallDecorations({
 }
 function InstanceBatch({
   objects,
-  layouts,
-  shape,
-  selected,
-  onSelect,
+  context,
 }: {
   objects: CakeObject[];
-  layouts: TierLayout[];
-  shape: CakeConfig["shape"];
-  selected?: string;
-  onSelect?: (id: string) => void;
+  context: SceneContext;
 }) {
   const ref = useRef<THREE.InstancedMesh>(null);
   const kind = assetById(objects[0].assetId)?.kind;
@@ -411,45 +389,41 @@ function InstanceBatch({
     if (!mesh) return;
     const dummy = new THREE.Object3D();
     objects.forEach((o, i) => {
-      const layout = layouts.find((l) => l.tier.id === o.attachment.tierId)!;
-      dummy.position.set(...attachmentPosition(o.attachment, layout, shape));
-      dummy.quaternion.copy(
-        attachmentQuaternion(o, layout.tier.shape ?? shape),
-      );
-      dummy.quaternion.multiply(
-        new THREE.Quaternion().setFromEuler(new THREE.Euler(...o.rotation)),
-      );
-      dummy.scale.setScalar(o.scale);
-      dummy.translateY(kind === "pearl" ? 0.025 : 0.006);
-      if (kind === "foil")
-        dummy.scale.multiply(
-          new THREE.Vector3(
-            0.5 + seedValue(o.seed),
-            1,
-            0.5 + seedValue(o.seed + 1),
-          ),
+      const placement = placementOf(o, context);
+      if (placement) {
+        dummy.position.copy(placement.position);
+        dummy.quaternion.copy(placement.quaternion);
+        dummy.quaternion.multiply(
+          new THREE.Quaternion().setFromEuler(new THREE.Euler(...o.rotation)),
         );
+        dummy.scale.setScalar(o.scale);
+        dummy.translateY(kind === "pearl" ? 0.025 : 0.006);
+        if (kind === "foil")
+          dummy.scale.multiply(
+            new THREE.Vector3(
+              0.5 + seedValue(o.seed),
+              1,
+              0.5 + seedValue(o.seed + 1),
+            ),
+          );
+      } else dummy.scale.setScalar(0);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
-      mesh.setColorAt(
-        i,
-        new THREE.Color(o.id === selected ? "#b99ac9" : o.color),
-      );
+      mesh.setColorAt(i, new THREE.Color(o.color));
     });
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     mesh.computeBoundingSphere();
-  }, [objects, layouts, shape, kind, selected]);
+  }, [objects, context, kind]);
   return (
     <instancedMesh
+      // A fixed-size instance buffer cannot grow; remount when the count does.
+      key={objects.length}
       ref={ref}
       args={[undefined, undefined, objects.length]}
       castShadow
       receiveShadow
-      onClick={(e: ThreeEvent<MouseEvent>) => {
-        e.stopPropagation();
-        if (e.instanceId !== undefined) onSelect?.(objects[e.instanceId].id);
-      }}
+      userData={{ instanceIds: objects.map((o) => o.id) }}
     >
       {kind === "sprinkle" ? (
         <capsuleGeometry args={[0.008, 0.034, 3, 5]} />

@@ -96,6 +96,23 @@ Production requires `OWNER_PASSWORD` (at least 16 characters) and `SESSION_SECRE
 
 For a standalone server, serve behind HTTPS. Configure `HOST`, `PORT`, and `DATABASE_PATH` as needed; retain and back up the SQLite file on persistent storage.
 
+## Image-to-3D for Cake Studio
+
+"Create from Cake Image" sends the photograph to an image-to-3D service and uses the GLB it returns as the cake. Set one key on the server; nothing is generated, and no stand-in cake is shown, without it:
+
+```sh
+# .env in the project root (read by `npm run dev` and `npm start`), or real environment variables
+MESHY_API_KEY=...        # https://www.meshy.ai — or TRIPO_API_KEY=... for Tripo
+```
+
+`IMAGE_TO_3D_PROVIDER=meshy|tripo` chooses between them when both keys are present. The other optional settings are listed in `.env.example`. Confirm a key works, at the cost of one generation, with:
+
+```sh
+npm run studio:image-to-3d-smoke -- path/to/cake.jpg
+```
+
+Generated models and reference photographs are stored in `.data/studio-assets` locally and in the `crumb_studio_assets` Postgres table when `DATABASE_URL` is set. See `src/studio/README.md` for the pipeline and its current limits, including what has and has not been exercised against a live provider.
+
 ## Vercel deployment
 
 Live application: **https://crumb-cake-os.vercel.app**. Sign in using `OWNER_PASSWORD` from the private `.env.deployment.local` file on the setup machine.

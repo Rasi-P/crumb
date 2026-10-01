@@ -71,7 +71,7 @@ export const materialNames = [
   "Petal",
   "Satin",
 ] as const;
-export const attachmentSchema = z.object({
+const tierAttachmentSchema = z.object({
   tierId: z.string(),
   surface: z.enum(["top", "side"]),
   // Radians, normalized radius, normalized height, and outward offset in inches.
@@ -80,6 +80,19 @@ export const attachmentSchema = z.object({
   height: z.number().min(0).max(1),
   offset: z.number().min(-0.1).max(2),
 });
+// A point on a generated model, in that model's normalized frame (footprint
+// one unit wide, base at y = 0). Moving or resizing the model carries it along.
+const modelAttachmentSchema = z.object({
+  surface: z.literal("model"),
+  modelId: z.string(),
+  point: vector3,
+  normal: vector3,
+  offset: z.number().min(-0.1).max(2),
+});
+export const attachmentSchema = z.discriminatedUnion("surface", [
+  tierAttachmentSchema,
+  modelAttachmentSchema,
+]);
 export const cakeObjectSchema = z.object({
   id: z.string().min(1),
   assetId: z.string().min(1).max(120),
@@ -93,6 +106,43 @@ export const cakeObjectSchema = z.object({
   hidden: z.boolean(),
   locked: z.boolean(),
   unitPrice: money,
+  // Free Transform displacement from the attached surface point, in inches.
+  nudge: vector3.optional(),
+});
+const studioAssetUrl = z
+  .string()
+  .regex(/^\/api\/studio\/assets\/[a-f0-9]{32}$/);
+export const referenceViews = ["front", "left", "back", "right"] as const;
+export const referenceImageSchema = z.object({
+  id: z.string().min(1),
+  url: studioAssetUrl,
+  view: z.enum(referenceViews),
+});
+// Geometry produced by an image-to-3D service (or an imported GLB). The mesh
+// itself is never rebuilt from primitives; the document stores where it sits.
+export const generatedModelSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1).max(100),
+  url: studioAssetUrl,
+  source: z.enum(["generated", "imported"]),
+  // Width of the model's footprint in inches; position in inches; Y rotation.
+  diameter: z.number().min(2).max(30),
+  // Measured height as a fraction of the footprint width.
+  height: z.number().min(0.01).max(20),
+  position: vector3,
+  rotation: z.number().finite(),
+  hidden: z.boolean(),
+  locked: z.boolean(),
+  parts: z
+    .array(
+      z.object({
+        key: z.string().min(1).max(60),
+        name: z.string().min(1).max(100),
+        hidden: z.boolean(),
+      }),
+    )
+    .max(64)
+    .optional(),
 });
 const letteringSchema = z.object({
   font: z.enum(["helvetiker", "optimer", "great-vibes"]),
@@ -162,6 +212,7 @@ export const cakeSchema = z
         diameter: z.number().min(4).max(24),
         thickness: z.number().min(0.1).max(1),
         material: z.enum(materialNames),
+        hidden: z.boolean().optional(),
       })
       .optional(),
     background: z
@@ -176,6 +227,8 @@ export const cakeSchema = z
     lettering: z
       .object({ text: letteringSchema, topper: letteringSchema })
       .optional(),
+    referenceImages: z.array(referenceImageSchema).max(4).optional(),
+    generatedModels: z.array(generatedModelSchema).max(4).optional(),
   })
   .superRefine((cake, ctx) => {
     const ids = new Set<string>(["board", "text", "topper"]);
@@ -188,6 +241,15 @@ export const cakeSchema = z
         });
       ids.add(t.id);
     }
+    for (const [i, m] of (cake.generatedModels || []).entries()) {
+      if (ids.has(m.id))
+        ctx.addIssue({
+          code: "custom",
+          message: "Every scene object must have a unique ID",
+          path: ["generatedModels", i, "id"],
+        });
+      ids.add(m.id);
+    }
     for (const [i, o] of (cake.objects || []).entries()) {
       if (ids.has(o.id))
         ctx.addIssue({
@@ -196,18 +258,33 @@ export const cakeSchema = z
           path: ["objects", i, "id"],
         });
       ids.add(o.id);
-      if (!cake.tiers.some((t) => t.id === o.attachment.tierId))
-        ctx.addIssue({
-          code: "custom",
-          message: "A decoration refers to a missing tier",
-          path: ["objects", i, "attachment", "tierId"],
-        });
+      if (o.attachment.surface === "model") {
+        const modelId = o.attachment.modelId;
+        if (!cake.generatedModels?.some((m) => m.id === modelId))
+          ctx.addIssue({
+            code: "custom",
+            message: "A decoration refers to a missing model",
+            path: ["objects", i, "attachment", "modelId"],
+          });
+      } else {
+        const tierId = o.attachment.tierId;
+        if (!cake.tiers.some((t) => t.id === tierId))
+          ctx.addIssue({
+            code: "custom",
+            message: "A decoration refers to a missing tier",
+            path: ["objects", i, "attachment", "tierId"],
+          });
+      }
     }
   });
 export type CakeConfig = z.infer<typeof cakeSchema>;
 export type CakeConfiguration = CakeConfig;
 export type CakeObject = z.infer<typeof cakeObjectSchema>;
 export type Attachment = z.infer<typeof attachmentSchema>;
+export type TierAttachment = z.infer<typeof tierAttachmentSchema>;
+export type ModelAttachment = z.infer<typeof modelAttachmentSchema>;
+export type GeneratedModel = z.infer<typeof generatedModelSchema>;
+export type ReferenceImage = z.infer<typeof referenceImageSchema>;
 export type Tier = z.infer<typeof tierSchema>;
 export const customerSchema = z.object({
   id: z.string(),

@@ -16,6 +16,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Box,
+  Image as ImageIcon,
   CakeSlice,
   Check,
   CheckCheck,
@@ -34,6 +35,7 @@ import {
   Minus,
   MousePointer2,
   Move3D,
+  Scaling,
   Palette,
   PanelLeftClose,
   Pencil,
@@ -64,6 +66,7 @@ import {
   type CakeObject,
   type Attachment,
   type Design,
+  type GeneratedModel,
   type Tier,
 } from "../domain/models";
 import { calculatePrice, inr, recipeFor } from "../domain/pricing";
@@ -72,6 +75,7 @@ import {
   Badge,
   Button,
   CakeImage,
+  Confirm,
   Field,
   IconButton,
   Modal,
@@ -83,23 +87,62 @@ import {
 import {
   normalizeCake,
   makeObject,
+  decorationGroup,
   serializeCake,
   deserializeCake,
+  tierIdOf,
 } from "../domain/cakeScene";
 import {
   AssetLibrary,
   LayerTree,
   SceneActions,
   ObjectInspector,
+  ModelInspector,
   TierDetails,
   LetteringDetails,
   Numeric,
 } from "./ScenePanels";
-import { ImageCakeDialog } from "./ImageCakeDialog";
+import {
+  duplicateSelection,
+  isLocked,
+  partOf,
+  removeSelection,
+} from "./sceneEdits";
+import { ImageCakeDialog, type GeneratedCake } from "./ImageCakeDialog";
 import { Cake2D } from "./Cake2D";
+import type { SceneApi } from "./Cake3D";
 import { QuoteForm } from "../pages/Quotations";
 const Cake3D = lazy(() => import("./Cake3D"));
+const tools = [
+  {
+    id: "select",
+    label: "Select",
+    hint: "Click to select · drag a decoration across the cake",
+  },
+  {
+    id: "rotate",
+    label: "Rotate",
+    hint: "Drag a ring to turn the decoration on any axis",
+  },
+  {
+    id: "scale",
+    label: "Scale",
+    hint: "Drag the handle to resize the decoration",
+  },
+  {
+    id: "free",
+    label: "Free",
+    hint: "Free Transform · move off the surface along X, Y or Z",
+  },
+] as const;
 
+// What a freshly opened design starts with selected: the generated model when
+// it stands in for the tiers, otherwise the top tier.
+const initialSelection = (c: CakeConfig) => [
+  (c.tiers.every((t) => t.hidden) &&
+    c.generatedModels?.find((m) => !m.hidden)?.id) ||
+    c.tiers[c.tiers.length - 1].id,
+];
 type HistoryState = {
   past: CakeConfig[];
   present: CakeConfig;
@@ -142,9 +185,15 @@ export default function Studio() {
   const [mode, setMode] = useState("3D Preview");
   const [library, setLibrary] = useState("Templates");
   const [panel, setPanel] = useState("Design");
-  const [selected, setSelected] = useState(
-    config.tiers[config.tiers.length - 1].id,
+  // Everything selected, most recent last; the last one drives the inspector.
+  const [selection, setSelection] = useState(() => initialSelection(config));
+  const selected = selection.at(-1) ?? "";
+  const setSelected = useCallback(
+    (id: string) => setSelection(id ? [id] : []),
+    [],
   );
+  const sceneApi = useRef<SceneApi | null>(null);
+  const [reference, setReference] = useState({ shown: false, opacity: 0.5 });
   const [search, setSearch] = useState("");
   const view = config.camera?.view || "Perspective";
   const [tool, setTool] = useState("select");
@@ -213,11 +262,18 @@ export default function Studio() {
   const mounted = useRef(true);
   const price = calculatePrice(config, d.business.margin, d.inventory);
   const selectedObject = config.objects?.find((o) => o.id === selected);
+  const selectedModel = config.generatedModels?.find((m) => m.id === selected);
+  const selectedPart = partOf(config, selected);
   const selectedTier =
     config.tiers.find(
-      (t) => t.id === (selectedObject?.attachment.tierId || selected),
+      (t) => t.id === (selectedObject ? tierIdOf(selectedObject) : selected),
     ) || config.tiers[config.tiers.length - 1];
   const tierIndex = config.tiers.indexOf(selectedTier);
+  const tierSelected = config.tiers.some((t) => t.id === selected);
+  // The mesh decorations land on when the parametric tiers are not shown.
+  const surfaceModel =
+    config.tiers.every((t) => t.hidden) &&
+    config.generatedModels?.find((m) => !m.hidden);
   const dirty = () => {
     setVersion((v) => v + 1);
     setSaved("Unsaved changes");
@@ -260,18 +316,44 @@ export default function Studio() {
     if (!selectedObject) setTool("select");
   }, [selectedObject?.id]);
   useEffect(() => {
-    if (
-      !["board", "text", "topper"].includes(selected) &&
-      !config.tiers.some((t) => t.id === selected) &&
-      !config.objects?.some((o) => o.id === selected)
-    )
-      setSelected(config.tiers.at(-1)!.id);
-  }, [config, selected]);
+    // Undo, deletion or a new document can leave IDs that no longer exist.
+    const exists = (id: string) =>
+      ["board", "text", "topper"].includes(id) ||
+      config.tiers.some((t) => t.id === id) ||
+      config.objects?.some((o) => o.id === id) ||
+      config.generatedModels?.some((m) => m.id === id) ||
+      !!partOf(config, id);
+    if (!selection.every(exists)) setSelection(selection.filter(exists));
+  }, [config, selection]);
   const updateObject = (object: CakeObject) =>
     change((c) => ({
       ...c,
       objects: c.objects!.map((o) => (o.id === object.id ? object : o)),
     }));
+  const updateModel = (model: GeneratedModel) =>
+    change((c) => {
+      const ratio =
+          model.diameter /
+          c.generatedModels!.find((m) => m.id === model.id)!.diameter,
+        half = (v: number, min: number, max: number) =>
+          Math.min(max, Math.max(min, Math.round(v * 2) / 2));
+      return {
+        ...c,
+        generatedModels: c.generatedModels!.map((m) =>
+          m.id === model.id ? model : m,
+        ),
+        // Resizing the model resizes the cake it stands for, so the hidden
+        // tiers that carry servings and price scale with it.
+        tiers:
+          ratio !== 1 && c.tiers.every((t) => t.hidden && !t.locked)
+            ? c.tiers.map((t) => ({
+                ...t,
+                diameter: half(t.diameter * ratio, 4, 16),
+                height: half(t.height * ratio, 2, 8),
+              }))
+            : c.tiers,
+      };
+    });
   const addObjects = (objects: CakeObject[]) => {
     change((c) => ({
       ...c,
@@ -281,10 +363,62 @@ export default function Studio() {
     setPanel("Design");
   };
   const placeAsset = (assetId: string, attachment: Attachment) =>
-    addObjects([{ ...makeObject(assetId, attachment.tierId), attachment }]);
-  const selectObject = (id: string) => {
-    setSelected(id);
+    addObjects([{ ...makeObject(assetId, config.tiers[0].id), attachment }]);
+  const addFromLibrary = (
+    assetId: string,
+    quantity: number,
+    spread: number,
+  ) => {
+    if (!surfaceModel) {
+      addObjects(
+        decorationGroup(
+          assetId,
+          selectedTier.id,
+          quantity,
+          spread,
+          Date.now() % 100000,
+        ),
+      );
+      return;
+    }
+    // On a generated mesh, new pieces land on the surface in view.
+    const attachments = sceneApi.current?.scatter(assetId, quantity);
+    if (attachments?.length) {
+      const seed = Date.now() % 100000;
+      addObjects(
+        attachments.map((attachment, i) => ({
+          ...makeObject(assetId, config.tiers[0].id, seed + i),
+          attachment,
+        })),
+      );
+    } else
+      setFileError(
+        mode === "3D Preview"
+          ? "Turn the cake so the surface you want is in the middle of the view, then add the decoration."
+          : "Open the 3D Preview to place decorations on the generated cake.",
+      );
+  };
+  const selectObject = (id: string | null, additive = false) => {
+    setSelection((current) =>
+      !id
+        ? []
+        : !additive
+          ? [id]
+          : current.includes(id)
+            ? current.filter((x) => x !== id)
+            : [...current, id],
+    );
     setPanel("Design");
+  };
+  const duplicateSelected = () => {
+    const result = duplicateSelection(
+      config,
+      selection,
+      (o) => sceneApi.current?.beside(o) ?? null,
+    );
+    if (!result.created.length) return;
+    change(result.config);
+    setSelection(result.created);
   };
   const exportConfig = () => {
     const url = URL.createObjectURL(
@@ -304,7 +438,7 @@ export default function Studio() {
       if (file.size > 4_000_000) throw new Error("Cake file exceeds 4 MB");
       const c = deserializeCake(await file.text());
       change(c);
-      setSelected(c.tiers.at(-1)!.id);
+      setSelection(initialSelection(c));
       setReset((v) => v + 1);
       setFileError("");
     } catch (e) {
@@ -374,7 +508,7 @@ export default function Studio() {
       present: normalizeCake(design.config),
       future: [],
     });
-    setSelected(design.config.tiers[design.config.tiers.length - 1].id);
+    setSelection(initialSelection(design.config));
     setVersion(0);
     savedVersion.current = 0;
     setSaved("Saved");
@@ -427,43 +561,80 @@ export default function Studio() {
     setVersion((v) => v + 1);
     setSaved("Unsaved changes");
   }, []);
-  const deleteLayer = useCallback(() => {
-    if (
-      config.objects?.find((o) => o.id === selected)?.locked ||
-      config.tiers.find((t) => t.id === selected)?.locked ||
-      ((selected === "text" || selected === "topper") &&
-        config.lettering?.[selected].locked)
-    )
-      return;
-    if (config.objects?.some((o) => o.id === selected)) {
-      change((c) => ({
-        ...c,
-        objects: c.objects!.filter((o) => o.id !== selected),
-      }));
-      setSelected(config.tiers.at(-1)!.id);
-    } else if (selected === "text") change((c) => ({ ...c, text: "" }));
-    else if (selected === "topper") change((c) => ({ ...c, topper: "" }));
-    else if (selected.startsWith("dec:")) {
-      const [, tierId, dec] = selected.split(":");
-      change((c) => ({
-        ...c,
-        tiers: c.tiers.map((t) =>
-          t.id === tierId
-            ? { ...t, decorations: t.decorations.filter((d) => d !== dec) }
-            : t,
-        ),
-      }));
-    } else if (
-      config.tiers.length > 1 &&
-      config.tiers.some((t) => t.id === selected)
-    ) {
-      change((c) => ({
-        ...c,
-        tiers: c.tiers.filter((t) => t.id !== selected),
-      }));
-      setSelected(config.tiers[0].id);
+  // A generated cake opens as a new design, like a template does; the design
+  // that was open stays saved as it was.
+  const applyGeneratedCake = async (cake: GeneratedCake) => {
+    if (version !== savedVersion.current) {
+      try {
+        await save();
+      } catch {
+        return;
+      }
     }
-  }, [selected, config, change]);
+    const blank = defaultCake(),
+      // The cake's own stand or board raises the first tier off the ground.
+      thickness = Math.min(1, Math.max(0.1, cake.base)),
+      next = normalizeCake({
+        ...blank,
+        referenceImages: cake.referenceImages,
+        generatedModels: [cake.model],
+        // Hidden stand-ins: they carry servings, recipe and price, and give
+        // lettering a place to sit, while the generated mesh is what is seen.
+        tiers: cake.tiers.map((t, i) => ({
+          ...blank.tiers[0],
+          ...t,
+          id: uid(),
+          decorations: [],
+          spacing:
+            i === 0 ? Math.min(4, Math.max(0, cake.base - thickness)) : 0,
+          hidden: true,
+        })),
+        text: "",
+        topper: "",
+        board: {
+          diameter: Math.min(24, Math.max(4, cake.model.diameter)),
+          thickness,
+          material: "Fondant",
+          hidden: true,
+        },
+        sellingPrice: null,
+        delivery: 0,
+      });
+    setDesignId(uid());
+    setName(
+      cake.model.source === "generated"
+        ? "Cake from photograph"
+        : "Imported cake model",
+    );
+    setCategory("Custom");
+    setHistory({ past: [], present: next, future: [] });
+    setSelection(initialSelection(next));
+    setVersion((v) => v + 1);
+    setSaved("Unsaved changes");
+    setMode("3D Preview");
+    setTool("select");
+    setReference((r) => ({ ...r, shown: false }));
+    setModal("");
+    setMobilePanel("none");
+    setReset((r) => r + 1);
+  };
+  const deleteSelected = useCallback(
+    (confirmed = false) => {
+      const removable = selection.filter((id) => !isLocked(config, id));
+      if (!removable.length) return;
+      // A generated model cost a generation to make; ask before discarding it.
+      if (
+        !confirmed &&
+        removable.some((id) => config.generatedModels?.some((m) => m.id === id))
+      ) {
+        setModal("delete-model");
+        return;
+      }
+      change(removeSelection(config, removable));
+      setSelection([]);
+    },
+    [selection, config, change],
+  );
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       const typing =
@@ -481,17 +652,30 @@ export default function Studio() {
         e.preventDefault();
         if (e.shiftKey) redo();
         else undo();
-      } else if (!typing && e.key === "Delete") {
+      } else if (
+        !typing &&
+        !modal &&
+        (e.key === "Delete" || e.key === "Backspace")
+      ) {
         e.preventDefault();
-        deleteLayer();
+        deleteSelected();
+      } else if (
+        !typing &&
+        !modal &&
+        (e.metaKey || e.ctrlKey) &&
+        e.key.toLowerCase() === "d"
+      ) {
+        e.preventDefault();
+        duplicateSelected();
       } else if (e.key === "Escape") {
+        if (!modal && mobilePanel === "none" && !typing) setSelection([]);
         setMobilePanel("none");
         setModal("");
       }
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, [save, undo, redo, deleteLayer]);
+  });
   const setTiers = (count: number) =>
     change((c) => {
       if (c.tiers.slice(count).some((t) => t.locked)) return c;
@@ -525,7 +709,7 @@ export default function Studio() {
       present: normalizeCake({ ...design.config, sellingPrice: null }),
       future: [],
     });
-    setSelected(design.config.tiers[design.config.tiers.length - 1].id);
+    setSelection(initialSelection(design.config));
     setVersion((v) => v + 1);
     setSaved("Unsaved changes");
     setReset((v) => v + 1);
@@ -736,7 +920,7 @@ export default function Studio() {
                 <WandSparkles size={19} />
                 <span>
                   <strong>Create from Cake Image</strong>
-                  <small>Turn a reference into an editable start</small>
+                  <small>Generate a real 3D model from a photograph</small>
                 </span>
                 <Plus size={14} />
               </button>
@@ -851,7 +1035,7 @@ export default function Studio() {
                   ))}
                 </div>
               </div>
-              <AssetLibrary tierId={selectedTier.id} onAdd={addObjects} />
+              <AssetLibrary onAdd={addFromLibrary} />
               <div className="studio-section">
                 <h3>Say it with cake</h3>
                 <Button
@@ -885,7 +1069,7 @@ export default function Studio() {
           ) : (
             <LayerTree
               config={config}
-              selected={selected}
+              selection={selection}
               onSelect={selectObject}
             />
           )}
@@ -927,34 +1111,74 @@ export default function Studio() {
           </div>
           {mode === "3D Preview" && (
             <div className="scene-toolstrip" aria-label="3D editing tools">
-              {["select", "move", "rotate", "scale"].map((t) => (
+              {tools.map((t) => (
                 <button
-                  key={t}
-                  aria-label={`${t[0].toUpperCase() + t.slice(1)} tool`}
-                  aria-pressed={tool === t}
-                  className={tool === t ? "active" : ""}
-                  disabled={t !== "select" && !selectedObject}
-                  onClick={() => setTool(t)}
+                  key={t.id}
+                  aria-label={`${t.label} tool`}
+                  aria-pressed={tool === t.id}
+                  title={t.hint}
+                  className={tool === t.id ? "active" : ""}
+                  disabled={t.id !== "select" && !selectedObject}
+                  onClick={() => setTool(t.id)}
                 >
-                  {t === "select" ? (
+                  {t.id === "select" ? (
                     <MousePointer2 size={16} />
-                  ) : t === "move" ? (
-                    <Move3D size={16} />
-                  ) : t === "rotate" ? (
+                  ) : t.id === "rotate" ? (
                     <RotateCw size={16} />
+                  ) : t.id === "scale" ? (
+                    <Scaling size={16} />
                   ) : (
-                    <Maximize size={16} />
+                    <Move3D size={16} />
                   )}
-                  <span>{t[0].toUpperCase() + t.slice(1)}</span>
+                  <span>{t.label}</span>
                 </button>
               ))}
+              {!!config.referenceImages?.length && (
+                <>
+                  <span className="toolbar-separator" />
+                  <button
+                    aria-label="Reference photo"
+                    aria-pressed={reference.shown}
+                    title="Compare with the reference photograph"
+                    className={reference.shown ? "active" : ""}
+                    onClick={() =>
+                      setReference((r) => ({ ...r, shown: !r.shown }))
+                    }
+                  >
+                    <ImageIcon size={16} />
+                    <span>Reference</span>
+                  </button>
+                  {reference.shown && (
+                    <input
+                      type="range"
+                      aria-label="Reference opacity"
+                      min="0.1"
+                      max="1"
+                      step="0.05"
+                      value={reference.opacity}
+                      onChange={(e) =>
+                        setReference((r) => ({
+                          ...r,
+                          opacity: Number(e.target.value),
+                        }))
+                      }
+                    />
+                  )}
+                </>
+              )}
             </div>
           )}
-          {selectedObject && mode === "3D Preview" && (
+          {mode === "3D Preview" && (
             <div className="scene-hint">
-              {tool === "move"
-                ? "Drag across a tier to place on its surface"
-                : `${selectedObject.name} · Attached to tier ${config.tiers.findIndex((t) => t.id === selectedObject.attachment.tierId) + 1}`}
+              {selection.length > 1
+                ? `${selection.length} selected · Delete or ⌘/Ctrl D applies to all`
+                : selectedObject
+                  ? tool === "select"
+                    ? `${selectedObject.name} · drag it across the cake`
+                    : tools.find((t) => t.id === tool)!.hint
+                  : selectedModel || selectedPart
+                    ? "Drag decorations from Elements onto the model"
+                    : "Click a piece to select it · shift-click to add to the selection"}
             </div>
           )}
           <div className="canvas-renderer">
@@ -969,15 +1193,23 @@ export default function Studio() {
               >
                 <Cake3D
                   config={config}
-                  selected={selected}
+                  selection={selection}
                   onSelect={selectObject}
                   view={view}
                   zoom={zoom}
                   reset={reset}
                   autoRotate={autoRotate}
                   tool={tool}
+                  api={sceneApi}
                   onObjectChange={updateObject}
                   onPlace={placeAsset}
+                  onDuplicate={duplicateSelected}
+                  onDelete={() => deleteSelected()}
+                  onModelError={() =>
+                    setFileError(
+                      "The generated 3D model could not be loaded. Check your connection and reload.",
+                    )
+                  }
                 />
               </Suspense>
             ) : (
@@ -992,6 +1224,16 @@ export default function Studio() {
                 />
               </div>
             )}
+            {mode === "3D Preview" &&
+              reference.shown &&
+              config.referenceImages?.[0] && (
+                <img
+                  className="reference-overlay"
+                  src={config.referenceImages[0].url}
+                  alt="Reference photograph"
+                  style={{ opacity: reference.opacity }}
+                />
+              )}
           </div>
           <div className="canvas-bottom-controls">
             <div className="camera-views">
@@ -1084,6 +1326,8 @@ export default function Studio() {
                 <span className="selected-icon">
                   {selectedObject ? (
                     <Flower2 size={17} />
+                  ) : selectedModel || selectedPart ? (
+                    <Box size={17} />
                   ) : selected === "text" ? (
                     <Type size={17} />
                   ) : selected === "topper" ? (
@@ -1093,17 +1337,31 @@ export default function Studio() {
                   )}
                 </span>
                 <span>
-                  <small>SELECTED</small>
+                  <small>
+                    {selection.length > 1
+                      ? `${selection.length} SELECTED`
+                      : selected
+                        ? "SELECTED"
+                        : "NOTHING SELECTED"}
+                  </small>
                   <strong>
-                    {selectedObject
-                      ? selectedObject.name
-                      : selected === "text"
-                        ? "Cake lettering"
-                        : selected === "topper"
-                          ? "Custom topper"
-                          : selected === "board"
-                            ? "Cake board"
-                            : `${tierIndex === 0 ? "Bottom" : tierIndex === config.tiers.length - 1 ? "Top" : `Middle`} tier`}
+                    {!selected
+                      ? "Whole cake"
+                      : selectedObject
+                        ? selectedObject.name
+                        : selectedModel
+                          ? selectedModel.name
+                          : selectedPart
+                            ? (selectedPart.model.parts?.find(
+                                (p) => p.key === selectedPart.key,
+                              )?.name ?? "Model part")
+                            : selected === "text"
+                              ? "Cake lettering"
+                              : selected === "topper"
+                                ? "Custom topper"
+                                : selected === "board"
+                                  ? "Cake board"
+                                  : `${tierIndex === 0 ? "Bottom" : tierIndex === config.tiers.length - 1 ? "Top" : `Middle`} tier`}
                   </strong>
                 </span>
                 <Select
@@ -1111,6 +1369,14 @@ export default function Studio() {
                   value={selected}
                   onChange={setSelected}
                   options={[
+                    ...(selected ? [] : [{ value: "", label: "Nothing" }]),
+                    ...(config.generatedModels || []).flatMap((m) => [
+                      { value: m.id, label: m.name },
+                      ...(m.parts || []).map((part) => ({
+                        value: `${m.id}/${part.key}`,
+                        label: `${m.name} · ${part.name}`,
+                      })),
+                    ]),
                     ...config.tiers.map((t, i) => ({
                       value: t.id,
                       label: `Tier ${i + 1} · ${t.diameter}″`,
@@ -1127,9 +1393,11 @@ export default function Studio() {
               </div>
               <SceneActions
                 config={config}
-                selected={selected}
+                selection={selection}
                 onChange={change}
-                onSelect={selectObject}
+                onSelect={setSelection}
+                onDuplicate={duplicateSelected}
+                onDelete={() => deleteSelected()}
               />
               {selectedObject ? (
                 <ObjectInspector
@@ -1137,6 +1405,39 @@ export default function Studio() {
                   config={config}
                   onChange={updateObject}
                 />
+              ) : selectedModel || selectedPart ? (
+                <>
+                  <ModelInspector
+                    model={selectedModel ?? selectedPart!.model}
+                    onChange={updateModel}
+                  />
+                  <div className="studio-section">
+                    <p className="small-copy muted">
+                      Servings and price come from the cake's estimated tiers (
+                      {config.tiers
+                        .map((t) => `${t.diameter}″ × ${t.height}″`)
+                        .join(", ")}
+                      ). Select a tier in Layers to correct its size.
+                    </p>
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setLibrary("Elements");
+                        setMobilePanel("library");
+                      }}
+                    >
+                      <Plus size={14} />
+                      Add editable decoration
+                    </Button>
+                  </div>
+                </>
+              ) : !selected ? (
+                <div className="studio-section">
+                  <p className="small-copy muted">
+                    Click any piece of the cake to edit it. Drag a decoration to
+                    move it across the surface; shift-click to select several.
+                  </p>
+                </div>
               ) : selected === "text" ? (
                 <fieldset
                   disabled={config.lettering!.text.locked}
@@ -1695,12 +1996,16 @@ export default function Studio() {
       {modal === "image" && (
         <ImageCakeDialog
           onClose={() => setModal("")}
-          onApply={(c) => {
-            change(c);
-            setSelected(c.tiers.at(-1)!.id);
-            setModal("");
-            setReset((r) => r + 1);
-          }}
+          onApply={(cake) => void applyGeneratedCake(cake)}
+        />
+      )}
+      {modal === "delete-model" && (
+        <Confirm
+          title="Remove the generated model?"
+          description="The 3D model and the decorations placed on it are removed from this design. You can undo this."
+          danger
+          onConfirm={() => deleteSelected(true)}
+          onClose={() => setModal("")}
         />
       )}
       {modal === "quote" && (

@@ -2,7 +2,9 @@ import {
   cakeSchema,
   type CakeConfig,
   type CakeObject,
-  type Attachment,
+  type GeneratedModel,
+  type ModelAttachment,
+  type TierAttachment,
   type Tier,
 } from "./models";
 import catalog from "../studio/assets/catalog.json";
@@ -40,12 +42,16 @@ export const seedValue = (seed: number) => {
   const x = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
   return x - Math.floor(x);
 };
+export const tierIdOf = (o: CakeObject) =>
+  o.attachment.surface === "model" ? undefined : o.attachment.tierId;
+export const modelIdOf = (o: CakeObject) =>
+  o.attachment.surface === "model" ? o.attachment.modelId : undefined;
 export function makeObject(
   assetId: string,
   tierId: string,
   seed = Date.now() % 1000000,
-  id = crypto.randomUUID(),
-): CakeObject {
+  id: string = crypto.randomUUID(),
+): CakeObject & { attachment: TierAttachment } {
   const asset = assetById(assetId);
   if (!asset) throw new Error("Unknown decoration asset");
   return {
@@ -54,7 +60,7 @@ export function makeObject(
     name: asset.name,
     attachment: {
       tierId,
-      surface: asset.allowedPlacements[0] as Attachment["surface"],
+      surface: asset.allowedPlacements[0] as TierAttachment["surface"],
       angle: 1.1,
       radius: 0.82,
       height: 0.65,
@@ -76,7 +82,7 @@ export function decorationGroup(
   count: number,
   spread = 360,
   seed = 13,
-): CakeObject[] {
+): (CakeObject & { attachment: TierAttachment })[] {
   return Array.from({ length: Math.min(100, Math.max(1, count)) }, (_, i) => {
     const o = makeObject(assetId, tierId, seed + i);
     const kind = assetById(assetId)?.kind;
@@ -165,7 +171,9 @@ export function normalizeCake(input: CakeConfig): CakeConfig {
   }
   c.sceneVersion = 2;
   c.objects = (c.objects || []).filter((o) =>
-    c.tiers.some((t) => t.id === o.attachment.tierId),
+    o.attachment.surface === "model"
+      ? c.generatedModels?.some((m) => m.id === modelIdOf(o))
+      : c.tiers.some((t) => t.id === tierIdOf(o)),
   );
   c.tiers = c.tiers.map((t) => ({ ...t, decorations: [] }));
   c.board ??= {
@@ -288,7 +296,7 @@ export function perimeterRadius(
   return radius;
 }
 export function attachmentPosition(
-  a: Attachment,
+  a: TierAttachment,
   l: TierLayout,
   shape: CakeConfig["shape"] = "Round",
 ): [number, number, number] {
@@ -309,7 +317,7 @@ export function attachmentFromPoint(
   l: TierLayout,
   shape: CakeConfig["shape"],
   top: boolean,
-): Attachment {
+): TierAttachment {
   const x = point[0] - l.x,
     z = point[2] - l.z,
     angle = Math.atan2(z, x);
@@ -326,22 +334,131 @@ export function attachmentFromPoint(
     offset: 0,
   };
 }
+// Generated models keep attachments in a normalized frame: the footprint spans
+// one unit and the base sits at y = 0. These convert to and from world units.
+export function modelPointToWorld(
+  m: GeneratedModel,
+  point: readonly [number, number, number],
+): [number, number, number] {
+  const s = m.diameter * UNIT,
+    cos = Math.cos(m.rotation),
+    sin = Math.sin(m.rotation);
+  return [
+    m.position[0] * UNIT + (point[0] * cos + point[2] * sin) * s,
+    m.position[1] * UNIT + point[1] * s,
+    m.position[2] * UNIT + (-point[0] * sin + point[2] * cos) * s,
+  ];
+}
+export function worldPointToModel(
+  m: GeneratedModel,
+  point: readonly [number, number, number],
+): [number, number, number] {
+  const s = m.diameter * UNIT,
+    x = (point[0] - m.position[0] * UNIT) / s,
+    z = (point[2] - m.position[2] * UNIT) / s,
+    cos = Math.cos(m.rotation),
+    sin = Math.sin(m.rotation);
+  return [
+    x * cos - z * sin,
+    (point[1] - m.position[1] * UNIT) / s,
+    x * sin + z * cos,
+  ];
+}
+export function modelDirectionToWorld(
+  m: GeneratedModel,
+  direction: readonly [number, number, number],
+): [number, number, number] {
+  const cos = Math.cos(m.rotation),
+    sin = Math.sin(m.rotation);
+  return [
+    direction[0] * cos + direction[2] * sin,
+    direction[1],
+    -direction[0] * sin + direction[2] * cos,
+  ];
+}
+export function worldDirectionToModel(
+  m: GeneratedModel,
+  direction: readonly [number, number, number],
+): [number, number, number] {
+  const cos = Math.cos(m.rotation),
+    sin = Math.sin(m.rotation);
+  return [
+    direction[0] * cos - direction[2] * sin,
+    direction[1],
+    direction[0] * sin + direction[2] * cos,
+  ];
+}
+export function modelAttachmentPosition(
+  a: ModelAttachment,
+  m: GeneratedModel,
+): [number, number, number] {
+  const p = modelPointToWorld(m, a.point),
+    n = modelDirectionToWorld(m, a.normal);
+  return [
+    p[0] + n[0] * a.offset * UNIT,
+    p[1] + n[1] * a.offset * UNIT,
+    p[2] + n[2] * a.offset * UNIT,
+  ];
+}
+// Spins an object around its surface normal (local +Y of the attachment
+// frame) while keeping any tilt. Rotations are XYZ Euler angles, as rendered.
+export function rotateAboutNormal(
+  rotation: CakeObject["rotation"],
+  radians: number,
+): CakeObject["rotation"] {
+  const [c1, c2, c3] = rotation.map((v) => Math.cos(v / 2)),
+    [s1, s2, s3] = rotation.map((v) => Math.sin(v / 2)),
+    bx = s1 * c2 * c3 + c1 * s2 * s3,
+    by = c1 * s2 * c3 - s1 * c2 * s3,
+    bz = c1 * c2 * s3 + s1 * s2 * c3,
+    bw = c1 * c2 * c3 - s1 * s2 * s3,
+    ay = Math.sin(radians / 2),
+    aw = Math.cos(radians / 2),
+    x = aw * bx + ay * bz,
+    y = ay * bw + aw * by,
+    z = aw * bz - ay * bx,
+    w = aw * bw - ay * by,
+    m13 = 2 * (x * z + w * y);
+  return Math.abs(m13) < 0.9999999
+    ? [
+        Math.atan2(-2 * (y * z - w * x), 1 - 2 * (x * x + y * y)),
+        Math.asin(m13),
+        Math.atan2(-2 * (x * y - w * z), 1 - 2 * (y * y + z * z)),
+      ]
+    : [
+        Math.atan2(2 * (y * z + w * x), 1 - 2 * (x * x + z * z)),
+        Math.asin(Math.max(-1, Math.min(1, m13))),
+        0,
+      ];
+}
+// An independent copy with a slightly different turn, size and petal seed, so
+// repeated flowers do not read as stamped clones.
+export function variedCopy(o: CakeObject, seed: number): CakeObject {
+  const vary = (n: number) => seedValue(seed + n) - 0.5;
+  const copy: CakeObject = {
+    ...structuredClone(o),
+    id: crypto.randomUUID(),
+    name: o.name.endsWith(" copy") ? o.name : `${o.name} copy`,
+    seed,
+    locked: false,
+    rotation: rotateAboutNormal(o.rotation, 0.35 + vary(1) * 0.5),
+    scale: Math.min(4, Math.max(0.1, o.scale * (1 + vary(2) * 0.08))),
+  };
+  if (copy.attachment.surface !== "model")
+    copy.attachment.angle += copy.attachment.surface === "top" ? 0.5 : 0.18;
+  return copy;
+}
 export function serializeCake(c: CakeConfig) {
   return JSON.stringify(cakeSchema.parse(normalizeCake(c)), null, 2);
 }
 export function deserializeCake(json: string) {
   if (json.length > 4_000_000) throw new Error("Cake file exceeds 4 MB");
   const parsed = cakeSchema.parse(JSON.parse(json));
-  if (
-    parsed.objects?.some(
-      (o) => !parsed.tiers.some((t) => t.id === o.attachment.tierId),
-    )
-  )
-    throw new Error("A decoration refers to a missing tier");
   const c = normalizeCake(parsed);
   const ids = [
     ...c.tiers.map((t) => t.id),
     ...(c.objects || []).map((o) => o.id),
+    ...(c.generatedModels || []).map((m) => m.id),
     "board",
     "text",
     "topper",
